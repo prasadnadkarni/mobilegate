@@ -16,27 +16,18 @@ import (
 // with tens of thousands of strings.
 const maxSampleStrings = 15
 
-func printText(apkPath string, m *manifest.Manifest, results []dexFileResult, findings []engine.Finding, surface scanSurfaceCounts) {
+func printText(apkPath string, m *manifest.Manifest, results []dexFileResult, mg001Findings, mg002Findings []engine.Finding, surface scanSurfaceCounts) {
 	fmt.Printf("APK: %s\n\n", apkPath)
 
 	fmt.Println("== MG-001: Hardcoded production secret ==")
 	fmt.Printf("scan surface: %d DEX strings (unattributed only), %d resources.arsc strings, %d AndroidManifest.xml strings, %d asset files\n",
 		surface.dexStrings, surface.resourceStrings, surface.manifestStrings, surface.assetFiles)
-	if len(findings) == 0 {
-		fmt.Println("no findings")
-	}
-	for _, f := range findings {
-		blockLabel := "WARNING"
-		if f.Blocking {
-			blockLabel = "BLOCKING"
-		}
-		fmt.Printf("[%s] %s (%s)\n", blockLabel, f.Title, f.PatternID)
-		fmt.Printf("  source:     %s\n", f.Source)
-		fmt.Printf("  location:   %s\n", f.Location)
-		fmt.Printf("  excerpt:    %s\n", f.Excerpt)
-		fmt.Printf("  confidence: %s   severity: %s   masvs: %s   cwe: %s\n", f.Confidence, f.Severity, f.MASVS, f.CWE)
-		fmt.Printf("  signal:     %s\n", f.SignalDetail)
-	}
+	printFindings(mg001Findings)
+	fmt.Println()
+
+	fmt.Println("== MG-002: Cleartext / accept-all transport ==")
+	fmt.Printf("networkSecurityConfig: %s\n", orNone(m.NetworkSecurityConfig))
+	printFindings(mg002Findings)
 	fmt.Println()
 
 	fmt.Println("== Manifest ==")
@@ -83,6 +74,28 @@ func printText(apkPath string, m *manifest.Manifest, results []dexFileResult, fi
 	}
 }
 
+func printFindings(findings []engine.Finding) {
+	if len(findings) == 0 {
+		fmt.Println("no findings")
+		return
+	}
+	for _, f := range findings {
+		blockLabel := "WARNING"
+		if f.Blocking {
+			blockLabel = "BLOCKING"
+		}
+		fmt.Printf("[%s] %s (%s)\n", blockLabel, f.Title, f.PatternID)
+		fmt.Printf("  source:     %s\n", f.Source)
+		fmt.Printf("  location:   %s\n", f.Location)
+		fmt.Printf("  excerpt:    %s\n", f.Excerpt)
+		fmt.Printf("  confidence: %s   severity: %s   masvs: %s   cwe: %s\n", f.Confidence, f.Severity, f.MASVS, f.CWE)
+		fmt.Printf("  signal:     %s\n", f.SignalDetail)
+		if f.TargetSDK != nil {
+			fmt.Printf("  targetSdkVersion: %d\n", *f.TargetSDK)
+		}
+	}
+}
+
 func tristateLabel(t manifest.Tristate) string {
 	switch t {
 	case manifest.True:
@@ -117,7 +130,8 @@ type jsonReport struct {
 	Components            []jsonComponent `json:"components"`
 	Dex                   []jsonDexFile   `json:"dex"`
 	ScanSurface           jsonScanSurface `json:"scan_surface"`
-	Findings              []jsonFinding   `json:"findings"`
+	MG001Findings         []jsonFinding   `json:"mg001_findings"`
+	MG002Findings         []jsonFinding   `json:"mg002_findings"`
 }
 
 type jsonScanSurface struct {
@@ -140,6 +154,7 @@ type jsonFinding struct {
 	Location     string `json:"location"`
 	Excerpt      string `json:"excerpt"`
 	SignalDetail string `json:"signal_detail"`
+	TargetSDK    *int   `json:"target_sdk_version,omitempty"`
 }
 
 type jsonComponent struct {
@@ -163,20 +178,10 @@ type jsonStringRef struct {
 	ClassType string `json:"class_type,omitempty"`
 }
 
-func printJSON(m *manifest.Manifest, results []dexFileResult, findings []engine.Finding, surface scanSurfaceCounts) {
-	rep := jsonReport{
-		PackageName:           m.PackageName,
-		UsesCleartextTraffic:  tristateLabel(m.UsesCleartextTraffic),
-		NetworkSecurityConfig: m.NetworkSecurityConfig,
-		ScanSurface: jsonScanSurface{
-			DexStringsUnattributed: surface.dexStrings,
-			ResourceStrings:        surface.resourceStrings,
-			ManifestStrings:        surface.manifestStrings,
-			AssetFiles:             surface.assetFiles,
-		},
-	}
+func toJSONFindings(findings []engine.Finding) []jsonFinding {
+	out := make([]jsonFinding, 0, len(findings))
 	for _, f := range findings {
-		rep.Findings = append(rep.Findings, jsonFinding{
+		out = append(out, jsonFinding{
 			RuleID:       f.RuleID,
 			PatternID:    f.PatternID,
 			Title:        f.Title,
@@ -189,7 +194,25 @@ func printJSON(m *manifest.Manifest, results []dexFileResult, findings []engine.
 			Location:     f.Location,
 			Excerpt:      f.Excerpt,
 			SignalDetail: f.SignalDetail,
+			TargetSDK:    f.TargetSDK,
 		})
+	}
+	return out
+}
+
+func printJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings, mg002Findings []engine.Finding, surface scanSurfaceCounts) {
+	rep := jsonReport{
+		PackageName:           m.PackageName,
+		UsesCleartextTraffic:  tristateLabel(m.UsesCleartextTraffic),
+		NetworkSecurityConfig: m.NetworkSecurityConfig,
+		ScanSurface: jsonScanSurface{
+			DexStringsUnattributed: surface.dexStrings,
+			ResourceStrings:        surface.resourceStrings,
+			ManifestStrings:        surface.manifestStrings,
+			AssetFiles:             surface.assetFiles,
+		},
+		MG001Findings: toJSONFindings(mg001Findings),
+		MG002Findings: toJSONFindings(mg002Findings),
 	}
 	for _, c := range m.Components {
 		rep.Components = append(rep.Components, jsonComponent{

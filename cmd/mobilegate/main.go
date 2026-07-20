@@ -1,10 +1,10 @@
 // Command mobilegate is the MobileGate CLI entrypoint.
 //
 // At this build-order step it exercises the parser (unzip, manifest, DEX
-// string extraction) and one rule, MG-001 (hardcoded secrets). There is
-// no scoring or gate decision (PASS/BLOCKED) yet, and no other rules —
-// those are later build-order steps. Findings are reported for review,
-// not enforced.
+// string extraction) and two rules, MG-001 (hardcoded secrets) and
+// MG-002 (cleartext transport). There is no scoring or gate decision
+// (PASS/BLOCKED) yet, and no other rules — those are later build-order
+// steps. Findings are reported for review, not enforced.
 package main
 
 import (
@@ -12,23 +12,32 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/prasadnadkarni/mobilegate/internal/config"
 	"github.com/prasadnadkarni/mobilegate/internal/engine"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/apk"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/arsc"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/dex"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/manifest"
+	"github.com/prasadnadkarni/mobilegate/pkg/parser/nsc"
 	"github.com/prasadnadkarni/mobilegate/rules"
 )
 
 func main() {
 	jsonOut := flag.Bool("json", false, "emit machine-readable parser dump instead of the human-readable report")
+	configPath := flag.String("config", ".mobilegate.yml", "path to .mobilegate.yml (currently just policy.first_party_domains, used by MG-002); a missing file is not an error")
 	flag.Parse()
 
 	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: mobilegate [-json] <path-to-apk>")
+		fmt.Fprintln(os.Stderr, "usage: mobilegate [-json] [-config path] <path-to-apk>")
 		os.Exit(2)
 	}
 	apkPath := flag.Arg(0)
+
+	cfg, err := config.LoadFile(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
+		os.Exit(1)
+	}
 
 	container, err := apk.Open(apkPath)
 	if err != nil {
@@ -67,7 +76,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	findings, err := scanMG001(dexStrings, resourceStrings, manifestStrings, container.AssetFiles)
+	mg001Findings, err := scanMG001(dexStrings, resourceStrings, manifestStrings, container.AssetFiles)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
+		os.Exit(1)
+	}
+
+	mg002Findings, err := scanMG002(container, m, cfg.Policy.FirstPartyDomains)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
 		os.Exit(1)
@@ -87,14 +102,14 @@ func main() {
 	}
 
 	if *jsonOut {
-		printJSON(m, dexResults, findings, scanSurface)
+		printJSON(m, dexResults, mg001Findings, mg002Findings, scanSurface)
 		return
 	}
-	printText(apkPath, m, dexResults, findings, scanSurface)
+	printText(apkPath, m, dexResults, mg001Findings, mg002Findings, scanSurface)
 }
 
 // scanMG001 loads the embedded MG-001 rule and runs it against the
-// parser output. The only rule wired in at this build-order step.
+// parser output.
 func scanMG001(dexStrings []dex.StringRef, resourceStrings, manifestStrings []arsc.PoolString, assets []apk.AssetEntry) ([]engine.Finding, error) {
 	data, err := rules.FS.ReadFile("MG-001-hardcoded-secret.yaml")
 	if err != nil {
@@ -116,6 +131,40 @@ func scanMG001(dexStrings []dex.StringRef, resourceStrings, manifestStrings []ar
 	for _, a := range assets {
 		findings = append(findings, scanner.ScanAsset(a.Name, a.Data)...)
 	}
+	return findings, nil
+}
+
+// scanMG002 loads the embedded MG-002 rule and runs it against the
+// already-parsed manifest, plus network_security_config.xml if the
+// manifest references one and it resolves to a real in-APK file.
+func scanMG002(container *apk.Container, m *manifest.Manifest, firstPartyDomains []string) ([]engine.Finding, error) {
+	data, err := rules.FS.ReadFile("MG-002-cleartext-transport.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("loading MG-002 rule: %w", err)
+	}
+	rule, err := engine.LoadTransportRule(data)
+	if err != nil {
+		return nil, fmt.Errorf("MG-002: %w", err)
+	}
+	scanner := engine.NewTransportScanner(rule, firstPartyDomains)
+
+	findings := scanner.CheckManifest(m)
+
+	if m.NetworkSecurityConfig == "" {
+		return findings, nil
+	}
+	nscData, found, err := container.ReadFile(m.NetworkSecurityConfig)
+	if err != nil {
+		return nil, fmt.Errorf("MG-002: reading %s: %w", m.NetworkSecurityConfig, err)
+	}
+	if !found {
+		return findings, nil
+	}
+	configs, err := nsc.Parse(nscData)
+	if err != nil {
+		return nil, fmt.Errorf("MG-002: parsing %s: %w", m.NetworkSecurityConfig, err)
+	}
+	findings = append(findings, scanner.CheckNetworkSecurityConfig(m.NetworkSecurityConfig, configs, m.TargetSdkVersion)...)
 	return findings, nil
 }
 
