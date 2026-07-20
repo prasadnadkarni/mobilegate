@@ -35,6 +35,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
 		os.Exit(1)
 	}
+	defer container.Close()
 
 	m, err := manifest.Parse(container.Manifest, container.ResourcesArsc)
 	if err != nil {

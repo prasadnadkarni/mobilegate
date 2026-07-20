@@ -97,6 +97,32 @@ both fixtures with an exact one-string diff naming the specific dropped
 string (e.g. `only in aapt2's dump: "Urinishlar soni ko'payib ketdi..."`).
 Reverted before committing anything.
 
+## network_security_config oracle (`nsc_oracle_test.go`)
+
+`pkg/parser/nsc` exists because `androidbinary.XMLFile` cannot read CDATA
+at all (the `ResXMLCDataType` constant is declared but never handled in
+its chunk switch — confirmed via `go doc` and empirically: decoding a
+real network_security_config through it produced
+`<domain includeSubdomains="true"></domain>`, the domain name gone).
+`aapt2 dump xmltree` is the one oracle tool that DOES print CDATA (as
+`T: 'text'` lines), so unlike the other oracles — which could only check
+counts or already-resolved fields — this one verifies the actual thing
+this package exists to extract.
+
+Requires an APK with a real `<domain-config>` block, not just
+`<base-config>` (most of the batch-1 corpus is base-config-only — see
+`rules/MG-002-cleartext-transport.yaml`). `MOBILEGATE_ORACLE_NSC_APK`
+points `make oracle` at Tusky specifically, the one corpus app with an
+actual domain-config (cleartext permitted for `.onion` domains — Tor
+hidden services, a legitimate real-world use of this exact mechanism).
+Skips cleanly if unset or if the given APK has no
+`android:networkSecurityConfig` at all.
+
+**Verified it actually catches regressions:** temporarily inverted the
+`includeSubdomains` boolean in `pkg/parser/nsc/nsc.go`, ran `make
+oracle`, and it failed with an exact diff (`ours: ...subdomains=false`
+vs `aapt2: ...subdomains=true`). Reverted before committing anything.
+
 ## Manifest string pool oracle (`manifest_strings_oracle_test.go`)
 
 `pkg/parser/arsc` reads two container formats, not just resources.arsc:

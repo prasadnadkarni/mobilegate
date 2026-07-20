@@ -230,6 +230,7 @@ func (f fixture) build(t *testing.T) *apk.Container {
 	if err != nil {
 		t.Fatalf("apk.Open(%s): %v", f.name, err)
 	}
+	t.Cleanup(func() { container.Close() })
 	return container
 }
 

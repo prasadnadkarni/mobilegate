@@ -47,6 +47,7 @@ func checkManifestStrings(t *testing.T, apkPath string) {
 	if err != nil {
 		t.Fatalf("apk.Open: %v", err)
 	}
+	defer container.Close()
 	if len(container.Manifest) == 0 {
 		t.Fatalf("%s: no AndroidManifest.xml found", apkPath)
 	}

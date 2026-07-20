@@ -55,6 +55,17 @@ const (
 	maxTopLevelChunks    = 1 << 20 // sanity cap on the outer scan loop, not a real-world limit
 )
 
+// Exported chunk-type/size constants — pkg/parser/nsc walks the same
+// binary-XML container beyond the leading string pool (element/attribute/
+// CDATA chunks this package doesn't read), and reuses ReadChunkHeader/
+// ParseStringPool below rather than duplicating string-pool decoding.
+const (
+	ChunkHeaderSize  = chunkHeaderSize
+	ChunkTypeXML     = resXMLType
+	ChunkTypeTable   = resTableType
+	ChunkTypeStrPool = resStringPoolType
+)
+
 // PoolString is one entry from the global string pool.
 type PoolString struct {
 	Index int
@@ -73,7 +84,7 @@ func ExtractGlobalStringPool(data []byte) ([]PoolString, error) {
 		return nil, fmt.Errorf("arsc: file too small to contain a container header (%d bytes)", len(data))
 	}
 
-	typ, headerSize, size, err := readChunkHeader(data, 0)
+	typ, headerSize, size, err := ReadChunkHeader(data, 0)
 	if err != nil {
 		return nil, fmt.Errorf("arsc: %w", err)
 	}
@@ -92,7 +103,7 @@ func ExtractGlobalStringPool(data []byte) ([]PoolString, error) {
 	// would silently skip the entire scan surface.
 	offset := headerSize
 	for i := 0; i < maxTopLevelChunks && offset < tableEnd; i++ {
-		ctyp, cheaderSize, csize, err := readChunkHeader(data, offset)
+		ctyp, cheaderSize, csize, err := ReadChunkHeader(data, offset)
 		if err != nil {
 			return nil, fmt.Errorf("arsc: reading chunk at offset %d: %w", offset, err)
 		}
@@ -100,7 +111,7 @@ func ExtractGlobalStringPool(data []byte) ([]PoolString, error) {
 			return nil, fmt.Errorf("arsc: zero-size chunk at offset %d", offset)
 		}
 		if ctyp == resStringPoolType {
-			return parseStringPool(data, offset, cheaderSize, csize)
+			return ParseStringPool(data, offset, cheaderSize, csize)
 		}
 		offset += csize
 	}
@@ -108,9 +119,12 @@ func ExtractGlobalStringPool(data []byte) ([]PoolString, error) {
 	return nil, nil
 }
 
-// readChunkHeader reads a ResChunkHeader at off, bounds-checked against
-// len(data) before returning.
-func readChunkHeader(data []byte, off uint32) (typ, headerSize, size uint32, err error) {
+// ReadChunkHeader reads a ResChunkHeader (type, headerSize, size) at off,
+// bounds-checked against len(data) before returning. Exported for
+// pkg/parser/nsc, which walks the same chunk sequence this package does
+// but continues past the leading string pool into element/attribute/
+// CDATA chunks.
+func ReadChunkHeader(data []byte, off uint32) (typ, headerSize, size uint32, err error) {
 	if uint64(off)+chunkHeaderSize > uint64(len(data)) {
 		return 0, 0, 0, fmt.Errorf("chunk header at offset %d out of bounds", off)
 	}
@@ -126,7 +140,11 @@ func readChunkHeader(data []byte, off uint32) (typ, headerSize, size uint32, err
 	return typ, headerSize, size, nil
 }
 
-func parseStringPool(data []byte, poolOff, headerSize, chunkSize uint32) ([]PoolString, error) {
+// ParseStringPool parses a single RES_STRING_POOL_TYPE chunk starting at
+// poolOff (chunk header already read into headerSize/chunkSize by the
+// caller, typically via ReadChunkHeader). Exported for pkg/parser/nsc —
+// see ReadChunkHeader's doc comment.
+func ParseStringPool(data []byte, poolOff, headerSize, chunkSize uint32) ([]PoolString, error) {
 	if uint64(poolOff)+stringPoolHeaderSize > uint64(len(data)) {
 		return nil, fmt.Errorf("arsc: string pool header at offset %d out of bounds", poolOff)
 	}

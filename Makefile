@@ -11,6 +11,14 @@ MULTIDEX_APK := testdata/real/org.schabi.newpipe_1013.apk
 MULTIDEX_APK_URL := https://f-droid.org/repo/org.schabi.newpipe_1013.apk
 MULTIDEX_APK_SHA256 := 88a1c99ca48394af431b24379783165860aaab3f7f45cce9ca6b8a7d2139a4d6
 
+# NSC fixture: Tusky is the only app in the batch-1 corpus with an actual
+# <domain-config> block (cleartext permitted for .onion domains) rather
+# than base-config-only — needed to oracle-verify pkg/parser/nsc's whole
+# reason for existing (domain CDATA text), not just its structure.
+NSC_APK := testdata/real/com.keylesspalace.tusky_142.apk
+NSC_APK_URL := https://f-droid.org/repo/com.keylesspalace.tusky_142.apk
+NSC_APK_SHA256 := 3e8fcc49a80d4c30ab6f6037e51402c77e2694d27ec19ae5b8a93cd08b6caffa
+
 build:
 	go build -o mobilegate ./cmd/mobilegate
 
@@ -32,6 +40,12 @@ fetch-testdata:
 		curl -sSL -o $(MULTIDEX_APK) $(MULTIDEX_APK_URL); \
 	fi
 	@echo "$(MULTIDEX_APK_SHA256)  $(MULTIDEX_APK)" | shasum -a 256 -c -
+	@if [ -f $(NSC_APK) ]; then \
+		echo "$(NSC_APK) already present"; \
+	else \
+		curl -sSL -o $(NSC_APK) $(NSC_APK_URL); \
+	fi
+	@echo "$(NSC_APK_SHA256)  $(NSC_APK)" | shasum -a 256 -c -
 
 # oracle cross-checks parsed manifest fields against a real Android-SDK
 # tool (apkanalyzer or aapt2) as a correctness check independent of our
@@ -42,6 +56,7 @@ fetch-testdata:
 oracle: fetch-testdata
 	MOBILEGATE_ORACLE_APK=$(abspath $(TEST_APK)) \
 	MOBILEGATE_ORACLE_MULTIDEX_APK=$(abspath $(MULTIDEX_APK)) \
+	MOBILEGATE_ORACLE_NSC_APK=$(abspath $(NSC_APK)) \
 	go test -tags oracle ./tools/oracle/... -v
 
 clean:

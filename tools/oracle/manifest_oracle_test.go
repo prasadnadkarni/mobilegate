@@ -62,6 +62,7 @@ func TestManifestAgainstAndroidSDK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apk.Open: %v", err)
 	}
+	defer container.Close()
 	got, err := manifest.Parse(container.Manifest, container.ResourcesArsc)
 	if err != nil {
 		t.Fatalf("manifest.Parse: %v", err)

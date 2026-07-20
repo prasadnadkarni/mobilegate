@@ -59,6 +59,7 @@ func checkResourceStrings(t *testing.T, apkPath string) {
 	if err != nil {
 		t.Fatalf("apk.Open: %v", err)
 	}
+	defer container.Close()
 	if len(container.ResourcesArsc) == 0 {
 		t.Fatalf("%s: no resources.arsc found", apkPath)
 	}

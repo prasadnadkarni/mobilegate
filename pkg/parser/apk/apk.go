@@ -24,11 +24,19 @@ var classesDexPattern = regexp.MustCompile(`^classes[0-9]*\.dex$`)
 
 // Container holds the raw bytes of the files needed from an APK.
 // DexFiles is ordered: classes.dex first, then classes2.dex, classes3.dex, …
+//
+// A Container returned by Open holds the underlying zip file open for
+// ReadFile's on-demand lookups (see below) — call Close when done with
+// it. A Container built in-process from an in-memory zip.Reader (as the
+// test suites do) needs no such cleanup; Close is a no-op for those.
 type Container struct {
 	Manifest      []byte // AndroidManifest.xml, may be nil if absent
 	ResourcesArsc []byte // resources.arsc, may be nil if absent
 	DexFiles      []DexEntry
 	AssetFiles    []AssetEntry // everything under the top-level assets/ directory
+
+	zr    *zip.ReadCloser
+	files map[string]*zip.File // every entry, for ReadFile's on-demand lookups
 }
 
 // DexEntry is one classes*.dex file extracted from the APK.
@@ -46,24 +54,62 @@ type AssetEntry struct {
 }
 
 // Open extracts AndroidManifest.xml, resources.arsc, and all classes*.dex
-// entries from the APK at path.
+// entries from the APK at path. The returned Container holds the file
+// open for ReadFile; call Close when done with it.
 func Open(path string) (*Container, error) {
 	r, err := zip.OpenReader(path)
 	if err != nil {
 		return nil, fmt.Errorf("apk: open zip: %w", err)
 	}
-	defer r.Close()
-	return read(&r.Reader)
+	c, err := read(&r.Reader)
+	if err != nil {
+		r.Close()
+		return nil, err
+	}
+	c.zr = r
+	return c, nil
+}
+
+// Close releases the underlying zip file, if Open opened one. Safe to
+// call on a Container built in-process (a no-op in that case).
+func (c *Container) Close() error {
+	if c.zr != nil {
+		return c.zr.Close()
+	}
+	return nil
+}
+
+// ReadFile fetches an arbitrary entry by its exact in-APK path, subject
+// to the same per-entry size cap as the entries extracted eagerly by
+// Open. For paths resolved from a resources.arsc file-based resource —
+// e.g. AndroidManifest.xml's android:networkSecurityConfig attribute,
+// which resolves to something like "res/xml/network_security_config.xml"
+// or, under resource shrinking, an arbitrary short name with no
+// recognizable pattern — since that resolved path can be anything, this
+// is a genuine lookup, not a pre-filtered category like AssetFiles.
+// Returns found=false, not an error, if no such entry exists.
+func (c *Container) ReadFile(name string) (data []byte, found bool, err error) {
+	f, ok := c.files[name]
+	if !ok {
+		return nil, false, nil
+	}
+	var budget int64 // fresh per-call budget; this is an on-demand single-file fetch, not part of Open's eager-extraction total
+	data, err = extract(f, &budget)
+	if err != nil {
+		return nil, true, err
+	}
+	return data, true, nil
 }
 
 func read(zr *zip.Reader) (*Container, error) {
-	c := &Container{}
+	c := &Container{files: make(map[string]*zip.File, len(zr.File))}
 	var totalRead int64
 
 	var dexNames []string
 	dexData := map[string][]byte{}
 
 	for _, f := range zr.File {
+		c.files[f.Name] = f
 		switch {
 		case f.Name == "AndroidManifest.xml":
 			data, err := extract(f, &totalRead)

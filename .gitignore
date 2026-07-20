@@ -6,3 +6,6 @@
 # Build output
 /mobilegate
 /dist/
+
+# macOS
+.DS_Store
