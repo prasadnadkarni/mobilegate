@@ -1,6 +1,6 @@
 // Package apk opens an APK's zip container and extracts the files the rest
-// of the parser needs: AndroidManifest.xml, resources.arsc, and the DEX
-// files. It does not interpret their contents.
+// of the parser needs: AndroidManifest.xml, resources.arsc, the DEX files,
+// and the assets/ directory. It does not interpret their contents.
 package apk
 
 import (
@@ -9,6 +9,7 @@ import (
 	"io"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // MaxUncompressedTotalBytes bounds the total bytes read out of the zip
@@ -27,11 +28,20 @@ type Container struct {
 	Manifest      []byte // AndroidManifest.xml, may be nil if absent
 	ResourcesArsc []byte // resources.arsc, may be nil if absent
 	DexFiles      []DexEntry
+	AssetFiles    []AssetEntry // everything under the top-level assets/ directory
 }
 
 // DexEntry is one classes*.dex file extracted from the APK.
 type DexEntry struct {
 	Name string // e.g. "classes.dex", "classes2.dex"
+	Data []byte
+}
+
+// AssetEntry is one file under the APK's assets/ directory — arbitrary
+// bundled files (config JSON, certs, etc.), distinct from compiled res/
+// resources. Name is the full in-APK path, e.g. "assets/config.json".
+type AssetEntry struct {
+	Name string
 	Data []byte
 }
 
@@ -74,6 +84,12 @@ func read(zr *zip.Reader) (*Container, error) {
 			}
 			dexNames = append(dexNames, f.Name)
 			dexData[f.Name] = data
+		case strings.HasPrefix(f.Name, "assets/") && !strings.HasSuffix(f.Name, "/"):
+			data, err := extract(f, &totalRead)
+			if err != nil {
+				return nil, fmt.Errorf("apk: extract %s: %w", f.Name, err)
+			}
+			c.AssetFiles = append(c.AssetFiles, AssetEntry{Name: f.Name, Data: data})
 		}
 	}
 
@@ -85,6 +101,8 @@ func read(zr *zip.Reader) (*Container, error) {
 	for _, name := range dexNames {
 		c.DexFiles = append(c.DexFiles, DexEntry{Name: name, Data: dexData[name]})
 	}
+
+	sort.Slice(c.AssetFiles, func(i, j int) bool { return c.AssetFiles[i].Name < c.AssetFiles[j].Name })
 
 	return c, nil
 }

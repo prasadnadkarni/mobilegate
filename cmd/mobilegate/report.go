@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/prasadnadkarni/mobilegate/internal/engine"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/dex"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/manifest"
 )
@@ -15,8 +16,26 @@ import (
 // with tens of thousands of strings.
 const maxSampleStrings = 15
 
-func printText(apkPath string, m *manifest.Manifest, results []dexFileResult) {
+func printText(apkPath string, m *manifest.Manifest, results []dexFileResult, findings []engine.Finding) {
 	fmt.Printf("APK: %s\n\n", apkPath)
+
+	fmt.Println("== MG-001: Hardcoded production secret ==")
+	if len(findings) == 0 {
+		fmt.Println("no findings")
+	}
+	for _, f := range findings {
+		blockLabel := "WARNING"
+		if f.Blocking {
+			blockLabel = "BLOCKING"
+		}
+		fmt.Printf("[%s] %s (%s)\n", blockLabel, f.Title, f.PatternID)
+		fmt.Printf("  source:     %s\n", f.Source)
+		fmt.Printf("  location:   %s\n", f.Location)
+		fmt.Printf("  excerpt:    %s\n", f.Excerpt)
+		fmt.Printf("  confidence: %s   severity: %s   masvs: %s   cwe: %s\n", f.Confidence, f.Severity, f.MASVS, f.CWE)
+		fmt.Printf("  signal:     %s\n", f.SignalDetail)
+	}
+	fmt.Println()
 
 	fmt.Println("== Manifest ==")
 	fmt.Printf("package:                 %s\n", m.PackageName)
@@ -95,6 +114,22 @@ type jsonReport struct {
 	NetworkSecurityConfig string          `json:"network_security_config"`
 	Components            []jsonComponent `json:"components"`
 	Dex                   []jsonDexFile   `json:"dex"`
+	Findings              []jsonFinding   `json:"findings"`
+}
+
+type jsonFinding struct {
+	RuleID       string `json:"rule_id"`
+	PatternID    string `json:"pattern_id"`
+	Title        string `json:"title"`
+	Blocking     bool   `json:"blocking"`
+	Confidence   string `json:"confidence"`
+	Severity     string `json:"severity"`
+	MASVS        string `json:"masvs"`
+	CWE          string `json:"cwe"`
+	Source       string `json:"source"`
+	Location     string `json:"location"`
+	Excerpt      string `json:"excerpt"`
+	SignalDetail string `json:"signal_detail"`
 }
 
 type jsonComponent struct {
@@ -118,11 +153,27 @@ type jsonStringRef struct {
 	ClassType string `json:"class_type,omitempty"`
 }
 
-func printJSON(m *manifest.Manifest, results []dexFileResult) {
+func printJSON(m *manifest.Manifest, results []dexFileResult, findings []engine.Finding) {
 	rep := jsonReport{
 		PackageName:           m.PackageName,
 		UsesCleartextTraffic:  tristateLabel(m.UsesCleartextTraffic),
 		NetworkSecurityConfig: m.NetworkSecurityConfig,
+	}
+	for _, f := range findings {
+		rep.Findings = append(rep.Findings, jsonFinding{
+			RuleID:       f.RuleID,
+			PatternID:    f.PatternID,
+			Title:        f.Title,
+			Blocking:     f.Blocking,
+			Confidence:   f.Confidence,
+			Severity:     f.Severity,
+			MASVS:        f.MASVS,
+			CWE:          f.CWE,
+			Source:       f.Source,
+			Location:     f.Location,
+			Excerpt:      f.Excerpt,
+			SignalDetail: f.SignalDetail,
+		})
 	}
 	for _, c := range m.Components {
 		rep.Components = append(rep.Components, jsonComponent{

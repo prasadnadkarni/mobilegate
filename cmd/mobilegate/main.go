@@ -1,8 +1,10 @@
 // Command mobilegate is the MobileGate CLI entrypoint.
 //
-// At this build-order step it only exercises the parser: unzip, manifest,
-// and DEX string extraction. There is no rule engine, scoring, or gate
-// decision yet — those are later build-order steps.
+// At this build-order step it exercises the parser (unzip, manifest, DEX
+// string extraction) and one rule, MG-001 (hardcoded secrets). There is
+// no scoring or gate decision (PASS/BLOCKED) yet, and no other rules —
+// those are later build-order steps. Findings are reported for review,
+// not enforced.
 package main
 
 import (
@@ -10,9 +12,11 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/prasadnadkarni/mobilegate/internal/engine"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/apk"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/dex"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/manifest"
+	"github.com/prasadnadkarni/mobilegate/rules"
 )
 
 func main() {
@@ -38,6 +42,7 @@ func main() {
 	}
 
 	var dexResults []dexFileResult
+	var dexStrings []dex.StringRef
 	for _, entry := range container.DexFiles {
 		strs, err := dex.ParseStrings(entry.Name, entry.Data)
 		if err != nil {
@@ -45,13 +50,44 @@ func main() {
 			os.Exit(1)
 		}
 		dexResults = append(dexResults, dexFileResult{name: entry.Name, strings: strs})
+		dexStrings = append(dexStrings, strs...)
+	}
+
+	findings, err := scanMG001(dexStrings, container.AssetFiles)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
+		os.Exit(1)
 	}
 
 	if *jsonOut {
-		printJSON(m, dexResults)
+		printJSON(m, dexResults, findings)
 		return
 	}
-	printText(apkPath, m, dexResults)
+	printText(apkPath, m, dexResults, findings)
+}
+
+// scanMG001 loads the embedded MG-001 rule and runs it against the
+// parser output. The only rule wired in at this build-order step.
+func scanMG001(dexStrings []dex.StringRef, assets []apk.AssetEntry) ([]engine.Finding, error) {
+	data, err := rules.FS.ReadFile("MG-001-hardcoded-secret.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("loading MG-001 rule: %w", err)
+	}
+	rule, err := engine.LoadRule(data)
+	if err != nil {
+		return nil, fmt.Errorf("MG-001: %w", err)
+	}
+	scanner, err := engine.NewSecretScanner(rule)
+	if err != nil {
+		return nil, fmt.Errorf("MG-001: %w", err)
+	}
+
+	var findings []engine.Finding
+	findings = append(findings, scanner.ScanDexStrings(dexStrings)...)
+	for _, a := range assets {
+		findings = append(findings, scanner.ScanAsset(a.Name, a.Data)...)
+	}
+	return findings, nil
 }
 
 type dexFileResult struct {
