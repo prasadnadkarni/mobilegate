@@ -366,6 +366,22 @@ func TestMG001_PositiveFixtures(t *testing.T) {
 				}},
 			"private-key-header",
 		},
+		{
+			// The shape of the real corpus hit this pattern was tightened
+			// for (MG-001 corpus batch 1, VLC): a full PEM block —
+			// embedded newlines and all — stored as a single DEX string,
+			// not an asset file. Closes the fixture-audit gap: before
+			// this, private-key-header had never been tested via any
+			// surface other than assets, despite being the one pattern
+			// with a real-world hit, and despite being the only
+			// multi-line-shaped pattern (exactly the dimension that hid
+			// the ScanAsset line-splitting bug).
+			fixture{name: "private_key_full_body_in_dex",
+				dexStrings: []string{"-----BEGIN PRIVATE KEY-----\n" +
+					padDigits("FAKEPRIVATEKEYBODYFORTESTINGPURPOSES", 60) +
+					"\n-----END PRIVATE KEY-----"}},
+			"private-key-header",
+		},
 	}
 
 	for _, tc := range cases {
