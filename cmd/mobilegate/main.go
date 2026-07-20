@@ -4,10 +4,18 @@
 // transport), MG-003 (backup exposure), MG-010 (debug/test build
 // artifact) — and emits the release gate's actual product output: a
 // PASS/BLOCKED decision, the failed controls, a secondary score, and
-// (with -json) the spec's machine-readable output contract. Baseline
-// mode (comparing against a stored baseline to block only on
-// regressions) is a later build-order step and not implemented here —
-// every blocking finding is currently evaluated as if in strict mode.
+// (with -json) the spec's machine-readable output contract.
+//
+// Two subcommands:
+//
+//	mobilegate [-baseline path] [-json] [-debug] [-warnings] [-config path] <apk>
+//	mobilegate baseline -write [-baseline path] [-config path] <apk>
+//
+// Strict mode (default, no -baseline flag) blocks on any blocking-tier
+// finding. Baseline mode (-baseline path) blocks only on findings not
+// present in that file — see internal/core.SplitByBaseline. A missing
+// or corrupt baseline falls back to strict mode with a loud warning,
+// never a silent pass — spec: "fail closed."
 package main
 
 import (
@@ -27,36 +35,172 @@ import (
 	"github.com/prasadnadkarni/mobilegate/rules"
 )
 
-func main() {
-	jsonOut := flag.Bool("json", false, "emit the machine-readable JSON output contract instead of the human-readable gate report")
-	debug := flag.Bool("debug", false, "emit the full parser-state dump (manifest fields, DEX string samples) instead of the gate report — development/troubleshooting only, not the product output")
-	showWarnings := flag.Bool("warnings", false, "show full warning-tier finding details in the terminal gate report (collapsed to a count by default)")
-	configPath := flag.String("config", ".mobilegate.yml", "path to .mobilegate.yml (currently just policy.first_party_domains, used by MG-002); a missing file is not an error")
-	flag.Parse()
+// defaultBaselinePath is where `mobilegate baseline -write` writes and
+// `mobilegate -baseline` (with no explicit path) looks, absent an
+// override — dot-prefixed to match .mobilegate.yml's convention, meant
+// to be committed to the project's repo.
+const defaultBaselinePath = ".mobilegate-baseline.yml"
 
-	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: mobilegate [-json] [-debug] [-warnings] [-config path] <path-to-apk>")
+func main() {
+	if len(os.Args) > 1 && os.Args[1] == "baseline" {
+		runBaseline(os.Args[2:])
+		return
+	}
+	runGate(os.Args[1:])
+}
+
+func runGate(args []string) {
+	fs := flag.NewFlagSet("mobilegate", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "emit the machine-readable JSON output contract instead of the human-readable gate report")
+	debug := fs.Bool("debug", false, "emit the full parser-state dump (manifest fields, DEX string samples) instead of the gate report — development/troubleshooting only, not the product output")
+	showWarnings := fs.Bool("warnings", false, "show full warning-tier finding details in the terminal gate report (collapsed to a count by default)")
+	baselinePath := fs.String("baseline", "", "path to a baseline file (see 'mobilegate baseline -write'); if set, run in baseline mode — findings already present in the baseline don't block. Unset (default): strict mode, every blocking finding blocks")
+	configPath := fs.String("config", ".mobilegate.yml", "path to .mobilegate.yml (currently just policy.first_party_domains, used by MG-002); a missing file is not an error")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: mobilegate [-json] [-debug] [-warnings] [-baseline path] [-config path] <path-to-apk>")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	if fs.NArg() != 1 {
+		fs.Usage()
 		os.Exit(2)
 	}
-	apkPath := flag.Arg(0)
+	apkPath := fs.Arg(0)
 
-	cfg, err := config.LoadFile(*configPath)
+	res, err := scanAPK(apkPath, *configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
 		os.Exit(1)
+	}
+
+	if *debug {
+		if *jsonOut {
+			printDebugJSON(res.m, res.dexResults, res.mg001, res.mg002, res.mg003, res.mg010, res.surface)
+			return
+		}
+		printDebugDump(apkPath, res.m, res.dexResults, res.mg001, res.mg002, res.mg003, res.mg010, res.surface)
+		return
+	}
+
+	allFindings := res.allFindings()
+
+	mode := modeStrict
+	var baselined []core.Finding
+	var baselineNotice string
+	if *baselinePath != "" {
+		b, loadErr := core.LoadBaseline(*baselinePath)
+		switch {
+		case loadErr == nil:
+			mode = modeBaseline
+			if b.RuleVersion != ruleVersion {
+				baselineNotice = fmt.Sprintf("baseline %s was written with rule_version %s; this build is %s — findings may have shifted since the baseline was written; review the result before trusting a clean scan", *baselinePath, b.RuleVersion, ruleVersion)
+			}
+			allFindings, baselined = core.SplitByBaseline(allFindings, b)
+		case os.IsNotExist(loadErr):
+			baselineNotice = fmt.Sprintf("no baseline file found at %s — running in STRICT mode (write one with: mobilegate baseline -write -baseline %s %s)", *baselinePath, *baselinePath, apkPath)
+		default:
+			baselineNotice = fmt.Sprintf("baseline file %s is corrupt or unreadable (%v) — falling back to STRICT mode; ALL existing findings are treated as new", *baselinePath, loadErr)
+		}
+	}
+
+	decision := core.Decide(allFindings)
+	score := core.Score(allFindings, decision)
+	blocking, warning, info := core.Buckets(allFindings)
+
+	if *jsonOut {
+		printContractJSON(mode, decision, score, blocking, warning, info, baselined, baselineNotice)
+	} else {
+		if baselineNotice != "" {
+			fmt.Fprintf(os.Stderr, "mobilegate: %s\n", baselineNotice)
+		}
+		printGateReport(apkPath, mode, decision, score, blocking, warning, info, baselined, *showWarnings)
+	}
+
+	if decision == core.GateBlocked {
+		os.Exit(1)
+	}
+}
+
+// runBaseline implements `mobilegate baseline -write <apk>`: runs the
+// same scan pipeline as the gate command, then writes a full snapshot
+// of its blocking-tier findings — replacing whatever baseline file was
+// there before, not merging with it, which is what makes the ratchet
+// property (a fixed finding drops out on the next write) hold with no
+// extra bookkeeping — see core.NewBaseline's doc comment.
+func runBaseline(args []string) {
+	fs := flag.NewFlagSet("mobilegate baseline", flag.ExitOnError)
+	write := fs.Bool("write", false, "write/replace the baseline file with the blocking findings from a fresh scan of the given APK (required — the only supported baseline operation right now)")
+	baselinePath := fs.String("baseline", defaultBaselinePath, "path to the baseline file to write")
+	configPath := fs.String("config", ".mobilegate.yml", "path to .mobilegate.yml")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: mobilegate baseline -write [-baseline path] [-config path] <path-to-apk>")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	if !*write {
+		fmt.Fprintln(os.Stderr, "mobilegate baseline: -write is required")
+		fs.Usage()
+		os.Exit(2)
+	}
+	if fs.NArg() != 1 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	apkPath := fs.Arg(0)
+
+	res, err := scanAPK(apkPath, *configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
+		os.Exit(1)
+	}
+
+	b := core.NewBaseline(scannerVersion, ruleVersion, res.allFindings())
+	if err := b.WriteFile(*baselinePath); err != nil {
+		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("wrote baseline: %d blocking finding(s) captured to %s\n", len(b.Findings), *baselinePath)
+}
+
+// scanResult is the full parser + rule-evaluation output for one APK —
+// shared by both runGate and runBaseline so the scan pipeline itself is
+// written and verified in exactly one place.
+type scanResult struct {
+	m          *manifest.Manifest
+	dexResults []dexFileResult
+	mg001      []core.Finding
+	mg002      []core.Finding
+	mg003      []core.Finding
+	mg010      []core.Finding
+	surface    scanSurfaceCounts
+}
+
+func (r *scanResult) allFindings() []core.Finding {
+	var out []core.Finding
+	out = append(out, r.mg001...)
+	out = append(out, r.mg002...)
+	out = append(out, r.mg003...)
+	out = append(out, r.mg010...)
+	return out
+}
+
+func scanAPK(apkPath, configPath string) (*scanResult, error) {
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		return nil, err
 	}
 
 	container, err := apk.Open(apkPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
-		os.Exit(1)
+		return nil, err
 	}
 	defer container.Close()
 
 	m, err := manifest.Parse(container.Manifest, container.ResourcesArsc)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
-		os.Exit(1)
+		return nil, err
 	}
 
 	var dexResults []dexFileResult
@@ -64,8 +208,7 @@ func main() {
 	for _, entry := range container.DexFiles {
 		strs, err := dex.ParseStrings(entry.Name, entry.Data)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
-			os.Exit(1)
+			return nil, err
 		}
 		dexResults = append(dexResults, dexFileResult{name: entry.Name, strings: strs})
 		dexStrings = append(dexStrings, strs...)
@@ -73,38 +216,32 @@ func main() {
 
 	resourceStrings, err := arsc.ExtractGlobalStringPool(container.ResourcesArsc)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
-		os.Exit(1)
+		return nil, err
 	}
 
 	manifestStrings, err := arsc.ExtractGlobalStringPool(container.Manifest)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
-		os.Exit(1)
+		return nil, err
 	}
 
 	mg001Findings, err := scanMG001(dexStrings, resourceStrings, manifestStrings, container.AssetFiles)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
-		os.Exit(1)
+		return nil, err
 	}
 
 	mg002Findings, err := scanMG002(container, m, cfg.Policy.FirstPartyDomains)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
-		os.Exit(1)
+		return nil, err
 	}
 
 	mg003Findings, err := scanMG003(container, m)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
-		os.Exit(1)
+		return nil, err
 	}
 
 	mg010Findings, err := scanMG010(m)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
-		os.Exit(1)
+		return nil, err
 	}
 
 	var dexUnattributed int
@@ -113,41 +250,21 @@ func main() {
 			dexUnattributed++
 		}
 	}
-	scanSurface := scanSurfaceCounts{
-		dexStrings:      dexUnattributed, // only Unattributed strings are actually scanned — see ScanDexStrings
-		resourceStrings: len(resourceStrings),
-		manifestStrings: len(manifestStrings),
-		assetFiles:      len(container.AssetFiles),
-	}
 
-	if *debug {
-		if *jsonOut {
-			printDebugJSON(m, dexResults, mg001Findings, mg002Findings, mg003Findings, mg010Findings, scanSurface)
-			return
-		}
-		printDebugDump(apkPath, m, dexResults, mg001Findings, mg002Findings, mg003Findings, mg010Findings, scanSurface)
-		return
-	}
-
-	var allFindings []core.Finding
-	allFindings = append(allFindings, mg001Findings...)
-	allFindings = append(allFindings, mg002Findings...)
-	allFindings = append(allFindings, mg003Findings...)
-	allFindings = append(allFindings, mg010Findings...)
-
-	decision := core.Decide(allFindings)
-	score := core.Score(allFindings, decision)
-	blocking, warning, info := core.Buckets(allFindings)
-
-	if *jsonOut {
-		printContractJSON(decision, score, blocking, warning, info)
-	} else {
-		printGateReport(apkPath, decision, score, blocking, warning, info, *showWarnings)
-	}
-
-	if decision == core.GateBlocked {
-		os.Exit(1)
-	}
+	return &scanResult{
+		m:          m,
+		dexResults: dexResults,
+		mg001:      mg001Findings,
+		mg002:      mg002Findings,
+		mg003:      mg003Findings,
+		mg010:      mg010Findings,
+		surface: scanSurfaceCounts{
+			dexStrings:      dexUnattributed, // only Unattributed strings are actually scanned — see ScanDexStrings
+			resourceStrings: len(resourceStrings),
+			manifestStrings: len(manifestStrings),
+			assetFiles:      len(container.AssetFiles),
+		},
+	}, nil
 }
 
 // scanMG001 loads the embedded MG-001 rule and runs it against the

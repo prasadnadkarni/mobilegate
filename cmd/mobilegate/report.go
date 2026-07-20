@@ -314,40 +314,49 @@ func printDebugJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings
 // produced a given result. No real release-versioning process exists
 // yet (pre-1.0, single-developer build) — bump these by hand when rule
 // logic changes meaningfully, the same discipline PERFORMANCE.md's
-// table already asks for on the performance side.
+// table already asks for on the performance side. ruleVersion is also
+// what a baseline file records and compares against on load — see
+// core.LoadBaseline and runGate's staleness check.
 const (
 	scannerVersion = "0.1.0"
 	ruleVersion    = "2026.07.1"
 
-	// policyMode is hardcoded to "strict" because baseline mode (the
-	// only thing that would ever make it anything else) is a separate,
-	// not-yet-built mechanism — CLAUDE.md build order step 5. See
-	// core.Decide's doc comment.
-	policyMode = "strict"
+	// modeStrict/modeBaseline are policy_mode's two possible values —
+	// spec's own example shows "strict"; modeBaseline is this build's
+	// own baseline-mode addition, selected at runtime by whether -baseline
+	// was passed and loaded successfully (see runGate), not hardcoded.
+	modeStrict   = "strict"
+	modeBaseline = "baseline"
 )
 
-// contractReport is the spec's output contract, verbatim: scanner_version,
+// contractReport is the spec's output contract: scanner_version,
 // rule_version, artifact_type, platform, gate_decision, policy_mode,
-// score, summary_counts, and three findings buckets with structured
-// evidence arrays.
+// score, summary_counts, and findings buckets with structured evidence
+// arrays. baselined_findings/baseline_notice are this build's own
+// baseline-mode addition, not in the spec's original example — omitted
+// entirely (via omitempty) in strict mode, so a strict-mode JSON
+// document is byte-for-byte what the spec shows.
 type contractReport struct {
-	ScannerVersion   string                `json:"scanner_version"`
-	RuleVersion      string                `json:"rule_version"`
-	ArtifactType     string                `json:"artifact_type"`
-	Platform         string                `json:"platform"`
-	GateDecision     core.GateDecision     `json:"gate_decision"`
-	PolicyMode       string                `json:"policy_mode"`
-	Score            int                   `json:"score"`
-	SummaryCounts    contractSummaryCounts `json:"summary_counts"`
-	BlockingFindings []contractFinding     `json:"blocking_findings"`
-	Warnings         []contractFinding     `json:"warnings"`
-	Info             []contractFinding     `json:"info"`
+	ScannerVersion    string                `json:"scanner_version"`
+	RuleVersion       string                `json:"rule_version"`
+	ArtifactType      string                `json:"artifact_type"`
+	Platform          string                `json:"platform"`
+	GateDecision      core.GateDecision     `json:"gate_decision"`
+	PolicyMode        string                `json:"policy_mode"`
+	Score             int                   `json:"score"`
+	SummaryCounts     contractSummaryCounts `json:"summary_counts"`
+	BlockingFindings  []contractFinding     `json:"blocking_findings"`
+	Warnings          []contractFinding     `json:"warnings"`
+	Info              []contractFinding     `json:"info"`
+	BaselinedFindings []contractFinding     `json:"baselined_findings,omitempty"`
+	BaselineNotice    string                `json:"baseline_notice,omitempty"`
 }
 
 type contractSummaryCounts struct {
-	Blocking int `json:"blocking"`
-	Warning  int `json:"warning"`
-	Info     int `json:"info"`
+	Blocking  int `json:"blocking"`
+	Warning   int `json:"warning"`
+	Info      int `json:"info"`
+	Baselined int `json:"baselined,omitempty"`
 }
 
 // contractFinding is one entry in blocking_findings/warnings/info.
@@ -388,23 +397,29 @@ func toContractFindings(findings []core.Finding) []contractFinding {
 }
 
 // printContractJSON emits the spec's machine-readable output contract.
-func printContractJSON(decision core.GateDecision, score int, blocking, warning, info []core.Finding) {
+// mode is "strict" or "baseline" (see modeStrict/modeBaseline); baselined
+// is empty in strict mode, and baselineNotice is empty unless baseline
+// mode degraded (missing/corrupt file, stale rule_version).
+func printContractJSON(mode string, decision core.GateDecision, score int, blocking, warning, info, baselined []core.Finding, baselineNotice string) {
 	rep := contractReport{
 		ScannerVersion: scannerVersion,
 		RuleVersion:    ruleVersion,
 		ArtifactType:   "apk",
 		Platform:       "android",
 		GateDecision:   decision,
-		PolicyMode:     policyMode,
+		PolicyMode:     mode,
 		Score:          score,
 		SummaryCounts: contractSummaryCounts{
-			Blocking: len(blocking),
-			Warning:  len(warning),
-			Info:     len(info),
+			Blocking:  len(blocking),
+			Warning:   len(warning),
+			Info:      len(info),
+			Baselined: len(baselined),
 		},
-		BlockingFindings: toContractFindings(blocking),
-		Warnings:         toContractFindings(warning),
-		Info:             toContractFindings(info),
+		BlockingFindings:  toContractFindings(blocking),
+		Warnings:          toContractFindings(warning),
+		Info:              toContractFindings(info),
+		BaselinedFindings: toContractFindings(baselined),
+		BaselineNotice:    baselineNotice,
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -419,14 +434,18 @@ func printContractJSON(decision core.GateDecision, score int, blocking, warning,
 // with RELEASE STATUS: BLOCKED and the failed controls. Warnings
 // collapsed by default." Not read start-to-finish; a CI log viewer or a
 // developer glancing at a failed pipeline step needs the verdict in the
-// first line, not buried under a manifest dump.
-func printGateReport(apkPath string, decision core.GateDecision, score int, blocking, warning, info []core.Finding, showWarnings bool) {
+// first line, not buried under a manifest dump. mode is "strict" or
+// "baseline"; baselined is the pre-existing debt a baseline grandfathered
+// (always empty in strict mode) — shown so nothing is silently hidden,
+// matching the baseline file's own "auditable, not opaque" requirement.
+func printGateReport(apkPath, mode string, decision core.GateDecision, score int, blocking, warning, info, baselined []core.Finding, showWarnings bool) {
 	status := "PASS"
 	if decision == core.GateBlocked {
 		status = "BLOCKED"
 	}
 	fmt.Printf("RELEASE STATUS: %s\n", status)
 	fmt.Printf("apk:   %s\n", apkPath)
+	fmt.Printf("mode:  %s\n", mode)
 	fmt.Printf("score: %d/100 (secondary to the release status above — see internal/core.Score)\n", score)
 	fmt.Println()
 
@@ -437,6 +456,12 @@ func printGateReport(apkPath string, decision core.GateDecision, score int, bloc
 		printControls(blocking, "  ")
 	}
 	fmt.Println()
+
+	if len(baselined) > 0 {
+		fmt.Printf("%d pre-existing finding(s) grandfathered by baseline (not blocking):\n", len(baselined))
+		printControls(baselined, "  ")
+		fmt.Println()
+	}
 
 	switch {
 	case len(warning) == 0:
