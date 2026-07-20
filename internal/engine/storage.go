@@ -5,6 +5,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 
+	"github.com/prasadnadkarni/mobilegate/pkg/parser/backuprules"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/manifest"
 )
 
@@ -87,18 +88,81 @@ func NewStorageScanner(rule *StorageRuleDef) *StorageScanner {
 	return &StorageScanner{rule: rule}
 }
 
-// CheckManifest evaluates android:allowBackup and its overrides.
+// CheckManifest evaluates android:allowBackup and the overrides that
+// need no file I/O to resolve (fullBackupContent="false", a custom
+// backupAgent). If a resource-reference override is present
+// (fullBackupContent or dataExtractionRules pointing at an XML
+// resource), the decision is deferred: this returns nil, and the
+// caller must check NeedsOverrideFileResolution, resolve+parse the
+// referenced file(s) via pkg/parser/backuprules, and call
+// CheckOverrideFiles with the result — see that method's comment for
+// why file content can change the answer.
 func (s *StorageScanner) CheckManifest(m *manifest.Manifest) []Finding {
-	if hasBackupOverride(m) {
-		// fullBackupContent="false" is confirmed-safe (backup affirmatively
-		// disabled); a referenced XML resource or a custom backupAgent
-		// means the developer took explicit action whose sufficiency this
-		// tool does not verify — either way, no finding. See this
-		// package's and the rule YAML's comments on why guessing wrong in
-		// the blocking direction here is worse than staying silent.
+	if hasFreeBackupOverride(m) {
 		return nil
 	}
+	if NeedsOverrideFileResolution(m) {
+		return nil
+	}
+	return s.allowBackupFinding(m)
+}
 
+// NeedsOverrideFileResolution reports whether m has a
+// fullBackupContent or dataExtractionRules attribute referencing an XML
+// resource (rather than being unset, "true", or the free-override
+// "false") — meaning CheckManifest's decision was deferred pending that
+// file's content, and the caller must resolve it before calling
+// CheckOverrideRestriction. Checked independently of hasFreeBackupOverride
+// so a resource reference is still flagged as needing resolution even if,
+// say, a custom backupAgent is ALSO set (rare, but the file should still
+// be checked rather than silently ignored).
+func NeedsOverrideFileResolution(m *manifest.Manifest) bool {
+	return fullBackupContentIsResourceRef(m) || m.DataExtractionRules != ""
+}
+
+// fullBackupContentIsResourceRef reports whether m.FullBackupContent
+// names an XML resource rather than being unset or one of the two
+// boolean literals ("true"/"false") the legacy attribute also accepts.
+func fullBackupContentIsResourceRef(m *manifest.Manifest) bool {
+	return m.FullBackupContent != "" && m.FullBackupContent != "true" && m.FullBackupContent != "false"
+}
+
+// CheckOverrideFiles finalizes MG-003's decision for an app whose
+// CheckManifest call deferred via NeedsOverrideFileResolution, using
+// the parsed content of whichever override file(s) were referenced.
+// Either parameter may be nil — because that attribute wasn't a
+// resource reference (see fullBackupContentIsResourceRef/
+// m.DataExtractionRules), or because the caller could not read or parse
+// the referenced file. A nil parameter contributes nothing toward
+// suppression: fail closed, since an unresolvable or malformed override
+// file is not evidence the developer scoped anything — it must not
+// silently protect a finding from firing.
+//
+// Suppresses (no finding) if EITHER supplied file expresses a
+// structural restriction, per FullBackupContent.Restricts() /
+// DataExtractionRules.Restricts() — an <exclude>, a requireFlags-gated
+// <include>, or disableIfNoEncryptionCapabilities="true" on
+// <cloud-backup>. See this rule's YAML for a known precedence caveat:
+// on API 31+ devices the platform honors dataExtractionRules and
+// ignores fullBackupContent entirely, so checking both with OR can
+// suppress on a fullBackupContent file the platform wouldn't actually
+// consult on a modern device — conservative in the safe direction
+// (never fails to suppress on the file that IS honored), not modeled
+// further.
+func (s *StorageScanner) CheckOverrideFiles(m *manifest.Manifest, fullBackupContent *backuprules.FullBackupContent, dataExtractionRules *backuprules.DataExtractionRules) []Finding {
+	if fullBackupContent != nil && fullBackupContent.Restricts() {
+		return nil
+	}
+	if dataExtractionRules != nil && dataExtractionRules.Restricts() {
+		return nil
+	}
+	return s.allowBackupFinding(m)
+}
+
+// allowBackupFinding is the shared AllowBackup decision, called once
+// CheckManifest or CheckOverrideRestriction has determined no override
+// suppresses it.
+func (s *StorageScanner) allowBackupFinding(m *manifest.Manifest) []Finding {
 	switch m.AllowBackup {
 	case manifest.True:
 		return []Finding{s.finding(SignalAllowBackupExplicit, s.rule.Severity, true,
@@ -143,19 +207,19 @@ func explicitAllowBackupDetail(targetSDK *int) string {
 	}
 }
 
-// hasBackupOverride reports whether the developer took any explicit
-// backup-scoping action beyond the bare allowBackup flag.
-// fullBackupContent="true" is NOT an override — Android treats it as
-// equivalent to the unscoped default, not a real restriction.
-func hasBackupOverride(m *manifest.Manifest) bool {
+// hasFreeBackupOverride reports whether the developer took a backup-
+// scoping action that needs no file I/O to resolve: fullBackupContent
+// set to the literal "false" (backup affirmatively disabled — NOT
+// "true", which Android treats as equivalent to the unscoped default,
+// not a real restriction), or a custom android:backupAgent class. A
+// custom agent's actual behavior would need DEX method-body/bytecode
+// analysis to verify — the same permanently-out-of-scope wall as
+// MG-002's TrustManager gap — so its mere presence is still blindly
+// trusted as an override, unlike the resource-reference case (see
+// NeedsOverrideFileResolution), which this parser CAN read.
+func hasFreeBackupOverride(m *manifest.Manifest) bool {
 	if m.FullBackupContent == "false" {
 		return true
-	}
-	if m.FullBackupContent != "" && m.FullBackupContent != "true" {
-		return true // a resource reference, e.g. "@xml/backup_rules" (resolved to its in-APK path)
-	}
-	if m.DataExtractionRules != "" {
-		return true // always a resource reference — no boolean literal form
 	}
 	if m.BackupAgent != "" {
 		return true

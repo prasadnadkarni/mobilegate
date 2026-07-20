@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/prasadnadkarni/mobilegate/internal/engine"
+	"github.com/prasadnadkarni/mobilegate/pkg/parser/backuprules"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/manifest"
 )
 
@@ -180,22 +181,6 @@ func TestMG003_NegativeFixtures(t *testing.T) {
 			},
 		},
 		{
-			name: "explicit_true_but_full_backup_content_resource_reference",
-			m: &manifest.Manifest{
-				AllowBackup:       manifest.True,
-				TargetSdkVersion:  sdk(23),
-				FullBackupContent: "res/xml/backup_rules.xml",
-			},
-		},
-		{
-			name: "unset_low_sdk_but_data_extraction_rules_set",
-			m: &manifest.Manifest{
-				AllowBackup:         manifest.Unset,
-				TargetSdkVersion:    sdk(23),
-				DataExtractionRules: "res/xml/data_extraction_rules.xml",
-			},
-		},
-		{
 			name: "unset_low_sdk_but_custom_backup_agent_set",
 			m: &manifest.Manifest{
 				AllowBackup:      manifest.Unset,
@@ -242,5 +227,130 @@ func TestMG003_FullBackupContentLiteralTrueIsNotAnOverride(t *testing.T) {
 	}
 	if findings[0].PatternID != engine.SignalAllowBackupExplicit {
 		t.Errorf("PatternID = %q, want %q", findings[0].PatternID, engine.SignalAllowBackupExplicit)
+	}
+}
+
+// --- deferred override-file resolution: NeedsOverrideFileResolution / CheckOverrideFiles ---
+
+func TestMG003_NeedsOverrideFileResolution(t *testing.T) {
+	cases := []struct {
+		name string
+		m    *manifest.Manifest
+		want bool
+	}{
+		{"no_override_at_all", &manifest.Manifest{AllowBackup: manifest.True}, false},
+		{"full_backup_content_literal_true", &manifest.Manifest{FullBackupContent: "true"}, false},
+		{"full_backup_content_literal_false", &manifest.Manifest{FullBackupContent: "false"}, false},
+		{"backup_agent_only", &manifest.Manifest{BackupAgent: "com.example.app.MyBackupAgent"}, false},
+		{"full_backup_content_resource_reference", &manifest.Manifest{FullBackupContent: "res/xml/backup_rules.xml"}, true},
+		{"data_extraction_rules_set", &manifest.Manifest{DataExtractionRules: "res/xml/data_extraction_rules.xml"}, true},
+		{
+			name: "both_resource_references",
+			m: &manifest.Manifest{
+				FullBackupContent:   "res/xml/backup_rules.xml",
+				DataExtractionRules: "res/xml/data_extraction_rules.xml",
+			},
+			want: true,
+		},
+		{
+			// Resource reference takes priority even if a (largely
+			// redundant) custom backupAgent is also set — the file should
+			// still be checked, not silently ignored.
+			name: "resource_reference_plus_backup_agent",
+			m: &manifest.Manifest{
+				FullBackupContent: "res/xml/backup_rules.xml",
+				BackupAgent:       "com.example.app.MyBackupAgent",
+			},
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := engine.NeedsOverrideFileResolution(tc.m); got != tc.want {
+				t.Errorf("NeedsOverrideFileResolution(%+v) = %v, want %v", tc.m, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMG003_CheckOverrideFiles covers the four scenarios the suppression
+// path must get right: a referenced file with real restrictions
+// suppresses, an include-only file does not, an empty file does not, and
+// an unresolvable/malformed file (represented here as a nil pointer —
+// see cmd/mobilegate's readBackupOverrideFiles, which never propagates a
+// parse/read error and returns nil in that case) does not — fail closed.
+func TestMG003_CheckOverrideFiles(t *testing.T) {
+	// Every case starts from a manifest that WOULD produce a blocking
+	// finding absent any override — explicit allowBackup=true — so a
+	// finding firing/not-firing directly reflects CheckOverrideFiles'
+	// restricts decision, not some other signal.
+	baseManifest := func() *manifest.Manifest {
+		return &manifest.Manifest{AllowBackup: manifest.True, TargetSdkVersion: sdk(34)}
+	}
+
+	cases := []struct {
+		name         string
+		fbc          *backuprules.FullBackupContent
+		der          *backuprules.DataExtractionRules
+		wantSuppress bool
+	}{
+		{
+			name:         "full_backup_content_has_exclude_suppresses",
+			fbc:          &backuprules.FullBackupContent{HasExclude: true},
+			wantSuppress: true,
+		},
+		{
+			name:         "full_backup_content_include_only_does_not_suppress",
+			fbc:          &backuprules.FullBackupContent{},
+			wantSuppress: false,
+		},
+		{
+			name:         "data_extraction_rules_disable_if_no_encryption_suppresses",
+			der:          &backuprules.DataExtractionRules{CloudBackupDisableIfNoEncryption: true},
+			wantSuppress: true,
+		},
+		{
+			name:         "data_extraction_rules_empty_does_not_suppress",
+			der:          &backuprules.DataExtractionRules{},
+			wantSuppress: false,
+		},
+		{
+			name:         "both_nil_unresolvable_or_malformed_does_not_suppress_fail_closed",
+			fbc:          nil,
+			der:          nil,
+			wantSuppress: false,
+		},
+		{
+			// One file couldn't be resolved (nil) but the other restricts —
+			// OR logic, so this still suppresses.
+			name:         "one_nil_one_restricts_still_suppresses",
+			fbc:          nil,
+			der:          &backuprules.DataExtractionRules{HasExclude: true},
+			wantSuppress: true,
+		},
+		{
+			// Both present, only one restricts — still suppresses.
+			name:         "full_backup_content_restricts_data_extraction_rules_does_not",
+			fbc:          &backuprules.FullBackupContent{HasRequireFlagsInclude: true},
+			der:          &backuprules.DataExtractionRules{},
+			wantSuppress: true,
+		},
+		{
+			// Neither restricts — must fire.
+			name:         "both_present_neither_restricts",
+			fbc:          &backuprules.FullBackupContent{},
+			der:          &backuprules.DataExtractionRules{},
+			wantSuppress: false,
+		},
+	}
+	scanner := engine.NewStorageScanner(mg003TestRule(t))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := scanner.CheckOverrideFiles(baseManifest(), tc.fbc, tc.der)
+			gotSuppressed := len(findings) == 0
+			if gotSuppressed != tc.wantSuppress {
+				t.Errorf("suppressed = %v, want %v (findings: %+v)", gotSuppressed, tc.wantSuppress, findings)
+			}
+		})
 	}
 }

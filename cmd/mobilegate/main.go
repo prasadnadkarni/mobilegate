@@ -17,6 +17,7 @@ import (
 	"github.com/prasadnadkarni/mobilegate/internal/engine"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/apk"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/arsc"
+	"github.com/prasadnadkarni/mobilegate/pkg/parser/backuprules"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/dex"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/manifest"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/nsc"
@@ -89,7 +90,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	mg003Findings, err := scanMG003(m)
+	mg003Findings, err := scanMG003(container, m)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
 		os.Exit(1)
@@ -182,8 +183,11 @@ func scanMG002(container *apk.Container, m *manifest.Manifest, firstPartyDomains
 }
 
 // scanMG003 loads the embedded MG-003 rule and runs it against the
-// already-parsed manifest.
-func scanMG003(m *manifest.Manifest) ([]engine.Finding, error) {
+// already-parsed manifest. If android:fullBackupContent or
+// android:dataExtractionRules references an XML resource,
+// StorageScanner defers its decision until that file's content is
+// resolved — see engine.StorageScanner.NeedsOverrideFileResolution.
+func scanMG003(container *apk.Container, m *manifest.Manifest) ([]engine.Finding, error) {
 	data, err := rules.FS.ReadFile("MG-003-plaintext-storage.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("loading MG-003 rule: %w", err)
@@ -193,7 +197,41 @@ func scanMG003(m *manifest.Manifest) ([]engine.Finding, error) {
 		return nil, fmt.Errorf("MG-003: %w", err)
 	}
 	scanner := engine.NewStorageScanner(rule)
-	return scanner.CheckManifest(m), nil
+
+	if !engine.NeedsOverrideFileResolution(m) {
+		return scanner.CheckManifest(m), nil
+	}
+	fbc, der := readBackupOverrideFiles(container, m)
+	return scanner.CheckOverrideFiles(m, fbc, der), nil
+}
+
+// readBackupOverrideFiles resolves and parses whichever of
+// fullBackupContent/dataExtractionRules names an XML resource. A
+// returned pointer is nil if that attribute isn't a resource reference,
+// or if the referenced file could not be found, read, or parsed — fail
+// closed, same as an unresolved network_security_config.xml reference
+// in scanMG002: this never returns an error, since a broken override
+// file must not abort the whole scan, only leave
+// engine.StorageScanner.CheckOverrideFiles unable to treat it as a
+// suppression.
+func readBackupOverrideFiles(container *apk.Container, m *manifest.Manifest) (*backuprules.FullBackupContent, *backuprules.DataExtractionRules) {
+	var fbc *backuprules.FullBackupContent
+	if m.FullBackupContent != "" && m.FullBackupContent != "true" && m.FullBackupContent != "false" {
+		if data, found, err := container.ReadFile(m.FullBackupContent); err == nil && found {
+			if parsed, perr := backuprules.ParseFullBackupContent(data, container.ResourcesArsc); perr == nil {
+				fbc = &parsed
+			}
+		}
+	}
+	var der *backuprules.DataExtractionRules
+	if m.DataExtractionRules != "" {
+		if data, found, err := container.ReadFile(m.DataExtractionRules); err == nil && found {
+			if parsed, perr := backuprules.ParseDataExtractionRules(data, container.ResourcesArsc); perr == nil {
+				der = &parsed
+			}
+		}
+	}
+	return fbc, der
 }
 
 // scanMG010 loads the embedded MG-010 rule and runs it against the

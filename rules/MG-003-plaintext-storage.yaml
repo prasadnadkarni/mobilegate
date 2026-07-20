@@ -109,36 +109,70 @@ remediation: >
 # so "never touched" in practice usually still means "explicit," not
 # "absent."
 #
-# Override suppression (hasBackupOverride in internal/engine/storage.go):
-# if android:fullBackupContent references an XML resource (not the
-# literal "true", which Android treats as equivalent to the unscoped
-# default — not a real restriction), or is the literal "false"
-# (backup affirmatively disabled), or android:dataExtractionRules is set
-# (API 31+, always a resource reference, no boolean literal form), or a
-# custom android:backupAgent class is set — any of these suppress all
-# three signals above, unconditionally. This rule does NOT parse the
-# referenced XML resource or the custom agent's behavior to check whether
-# the scoping is actually sufficient. Deliberate precision-over-recall
-# call: the developer took a real, explicit action here, and guessing
-# wrong in the blocking direction (flagging a correctly-scoped backup
-# config as if it were unscoped) is a worse failure for this tool's
-# thesis than staying silent on a scoping file that turns out to be
-# insufficient — that residual risk is exactly the kind of judgment call
-# left to human review, not a heuristic this gate should attempt.
+# Override suppression (internal/engine/storage.go). Two tiers:
 #
-# Known gap, larger than originally assessed: 5 of 12 corpus apps (42%)
-# suppress via this path (KeePassDX, AntennaPod, Conversations, Dolphin,
-# VLC), all trusted without inspecting the referenced file's content.
-# Both fullBackupContent and dataExtractionRules files express their
-# include/exclude rules as element attributes (domain=/path=), not CDATA
-# text, so — unlike network_security_config.xml, which needed a custom
-# CDATA-aware tree walker (pkg/parser/nsc) — a parser for these could
-# likely reuse androidbinary's existing struct-tag XML decode, the same
-# way pkg/parser/manifest already does, with no new binary-XML-walking
-# code required. A structural (not content-inferring) signal worth
-# targeting first: an override file with zero <exclude> rules anywhere
-# restricts nothing and is not meaningfully different from no override at
-# all. Flagged for earlier reprioritization than v2, not yet built.
+#   Free overrides (no file I/O — hasFreeBackupOverride): android:
+#   fullBackupContent set to the literal "false" (backup affirmatively
+#   disabled — NOT "true", which Android treats as equivalent to the
+#   unscoped default, not a real restriction), or a custom
+#   android:backupAgent class. A custom agent's actual behavior would
+#   need DEX method-body/bytecode analysis to verify — the same
+#   permanently-out-of-scope wall as MG-002's TrustManager gap — so its
+#   mere presence is still blindly trusted.
+#
+#   Resource-reference overrides (checked, not blindly trusted —
+#   pkg/parser/backuprules): if android:fullBackupContent or
+#   android:dataExtractionRules references an XML resource, this rule
+#   reads and parses that file (both formats express every fact as
+#   element attributes, not CDATA text, so this reuses androidbinary's
+#   struct-tag XML decode directly — the same mechanism
+#   pkg/parser/manifest already uses, unlike network_security_config.xml,
+#   which needed a custom CDATA-aware tree walker) and suppresses only if
+#   the file expresses a real structural restriction: an <exclude>
+#   element anywhere, an <include requireFlags="..."> (legacy
+#   fullBackupContent only — checked against
+#   developer.android.com/guide/topics/data/autobackup, since
+#   requireFlags is a documented restriction mechanism distinct from
+#   <exclude>), or disableIfNoEncryptionCapabilities="true" on
+#   <cloud-backup> (dataExtractionRules only). This still does NOT judge
+#   whether the specific paths/domains excluded are the right ones —
+#   that sufficiency judgment stays out of scope, same as the free-
+#   override tier — only whether the file restricts SOMETHING at all.
+#   An include-only or genuinely empty file does not suppress. Neither
+#   does a file this tool could not find, read, or parse — fail closed:
+#   an unresolvable override is not evidence of anything.
+#
+#   Known precedence gap, not modeled: on API 31+ devices the platform
+#   honors dataExtractionRules and ignores fullBackupContent entirely if
+#   both are set. This rule checks both (OR) rather than modeling that
+#   precedence, which stays conservative — it can suppress on a
+#   fullBackupContent file the platform wouldn't actually consult on a
+#   modern device, but never fails to suppress on the file that IS
+#   honored.
+#
+# This was a real, not hypothetical, precision gap: the "any <exclude>"
+# framing considered first would have false-positived on Conversations
+# (corpus), whose fullBackupContent/dataExtractionRules files restrict
+# backup ENTIRELY through requireFlags="clientSideEncryption" and
+# disableIfNoEncryptionCapabilities="true" — zero <exclude> elements in
+# either file — deliberately conditioning backup on device-side
+# encryption support, which is good engineering, not an unscoped
+# override. Caught by inspecting real corpus file content (via aapt2)
+# before shipping the narrower rule, not by an abstract review.
+#
+# Corpus result after building this check (12-app batch): unchanged from
+# before it existed — still 3 blocking findings (Simple Flashlight,
+# Material Files, NewPipe), all with no override reference at all. Of
+# the 5 apps (42%) that DO suppress via a resource-reference override
+# (KeePassDX, Conversations, Dolphin, VLC — plus AntennaPod via the free
+# backupAgent tier, unaffected by this check), every referenced file
+# that was actually inspected turned out to contain a real restriction —
+# no false suppression found in this corpus. That the coincidentally
+# shared filename "res/Qq.xml" across KeePassDX/Dolphin/VLC (a resource-
+# shrinker artifact, confirmed by raw-byte diff to NOT be the same file
+# despite the name) turned out to be three substantively different,
+# genuinely-scoped files reinforced the same lesson as the Conversations
+# case: don't assume from a coincidence, check the content.
 # NOT implemented (v1 scope decision, same disposition as the bytecode
 # gaps documented in MG-001/MG-002's YAMLs):
 #   - MODE_WORLD_READABLE / MODE_WORLD_WRITEABLE at openFileOutput/
