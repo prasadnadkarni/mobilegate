@@ -17,6 +17,7 @@ numbers are comparable across rows.
 |---|---:|---|---:|---|---|
 | MG-001 only | 531 MB | Nextcloud | 5.15s | Fennec | batch-1 baseline |
 | MG-001 + MG-002 | 477 MB | Nextcloud | 5.41s | Fennec | +network_security_config.xml parsing; negligible surface added (NSC files are tiny) — within run-to-run noise of the MG-001-only baseline, not a real increase |
+| MG-001 + MG-002 + MG-003 + MG-010 | 564 MB | Nextcloud | 5.09s | Fennec | +7 manifest attributes (allowBackup/debuggable/testOnly/fullBackupContent/dataExtractionRules/backupAgent), zero new files read; within run-to-run noise of the MG-002 row, not a real increase — expected, since MG-003/MG-010 add no new scan surface beyond fields already resolved during the same manifest parse |
 
 ## Reading this
 

@@ -1,10 +1,11 @@
 // Command mobilegate is the MobileGate CLI entrypoint.
 //
 // At this build-order step it exercises the parser (unzip, manifest, DEX
-// string extraction) and two rules, MG-001 (hardcoded secrets) and
-// MG-002 (cleartext transport). There is no scoring or gate decision
-// (PASS/BLOCKED) yet, and no other rules — those are later build-order
-// steps. Findings are reported for review, not enforced.
+// string extraction) and four rules: MG-001 (hardcoded secrets), MG-002
+// (cleartext transport), MG-003 (backup exposure), and MG-010 (debug/
+// test build artifact). There is no scoring or gate decision
+// (PASS/BLOCKED) yet — that's a later build-order step. Findings are
+// reported for review, not enforced.
 package main
 
 import (
@@ -88,6 +89,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	mg003Findings, err := scanMG003(m)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
+		os.Exit(1)
+	}
+
+	mg010Findings, err := scanMG010(m)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
+		os.Exit(1)
+	}
+
 	var dexUnattributed int
 	for _, s := range dexStrings {
 		if s.Usage == dex.Unattributed {
@@ -102,10 +115,10 @@ func main() {
 	}
 
 	if *jsonOut {
-		printJSON(m, dexResults, mg001Findings, mg002Findings, scanSurface)
+		printJSON(m, dexResults, mg001Findings, mg002Findings, mg003Findings, mg010Findings, scanSurface)
 		return
 	}
-	printText(apkPath, m, dexResults, mg001Findings, mg002Findings, scanSurface)
+	printText(apkPath, m, dexResults, mg001Findings, mg002Findings, mg003Findings, mg010Findings, scanSurface)
 }
 
 // scanMG001 loads the embedded MG-001 rule and runs it against the
@@ -166,6 +179,36 @@ func scanMG002(container *apk.Container, m *manifest.Manifest, firstPartyDomains
 	}
 	findings = append(findings, scanner.CheckNetworkSecurityConfig(m.NetworkSecurityConfig, configs, m.TargetSdkVersion)...)
 	return findings, nil
+}
+
+// scanMG003 loads the embedded MG-003 rule and runs it against the
+// already-parsed manifest.
+func scanMG003(m *manifest.Manifest) ([]engine.Finding, error) {
+	data, err := rules.FS.ReadFile("MG-003-plaintext-storage.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("loading MG-003 rule: %w", err)
+	}
+	rule, err := engine.LoadStorageRule(data)
+	if err != nil {
+		return nil, fmt.Errorf("MG-003: %w", err)
+	}
+	scanner := engine.NewStorageScanner(rule)
+	return scanner.CheckManifest(m), nil
+}
+
+// scanMG010 loads the embedded MG-010 rule and runs it against the
+// already-parsed manifest.
+func scanMG010(m *manifest.Manifest) ([]engine.Finding, error) {
+	data, err := rules.FS.ReadFile("MG-010-debug-build-artifact.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("loading MG-010 rule: %w", err)
+	}
+	rule, err := engine.LoadHygieneRule(data)
+	if err != nil {
+		return nil, fmt.Errorf("MG-010: %w", err)
+	}
+	scanner := engine.NewHygieneScanner(rule)
+	return scanner.CheckManifest(m), nil
 }
 
 // scanSurfaceCounts is reported alongside findings so "zero findings" can

@@ -16,7 +16,7 @@ import (
 // with tens of thousands of strings.
 const maxSampleStrings = 15
 
-func printText(apkPath string, m *manifest.Manifest, results []dexFileResult, mg001Findings, mg002Findings []engine.Finding, surface scanSurfaceCounts) {
+func printText(apkPath string, m *manifest.Manifest, results []dexFileResult, mg001Findings, mg002Findings, mg003Findings, mg010Findings []engine.Finding, surface scanSurfaceCounts) {
 	fmt.Printf("APK: %s\n\n", apkPath)
 
 	fmt.Println("== MG-001: Hardcoded production secret ==")
@@ -30,10 +30,26 @@ func printText(apkPath string, m *manifest.Manifest, results []dexFileResult, mg
 	printFindings(mg002Findings)
 	fmt.Println()
 
+	fmt.Println("== MG-003: Plaintext sensitive storage (backup exposure) ==")
+	fmt.Printf("allowBackup: %s   targetSdkVersion: %s\n", tristateLabel(m.AllowBackup), targetSdkLabel(m.TargetSdkVersion))
+	printFindings(mg003Findings)
+	fmt.Println()
+
+	fmt.Println("== MG-010: Debug/test build artifact ==")
+	fmt.Printf("debuggable: %s   testOnly: %s\n", tristateLabel(m.Debuggable), tristateLabel(m.TestOnly))
+	printFindings(mg010Findings)
+	fmt.Println()
+
 	fmt.Println("== Manifest ==")
 	fmt.Printf("package:                 %s\n", m.PackageName)
 	fmt.Printf("usesCleartextTraffic:    %s\n", tristateLabel(m.UsesCleartextTraffic))
 	fmt.Printf("networkSecurityConfig:   %s\n", orNone(m.NetworkSecurityConfig))
+	fmt.Printf("allowBackup:             %s\n", tristateLabel(m.AllowBackup))
+	fmt.Printf("debuggable:              %s\n", tristateLabel(m.Debuggable))
+	fmt.Printf("testOnly:                %s\n", tristateLabel(m.TestOnly))
+	fmt.Printf("fullBackupContent:       %s\n", orNone(m.FullBackupContent))
+	fmt.Printf("dataExtractionRules:     %s\n", orNone(m.DataExtractionRules))
+	fmt.Printf("backupAgent:             %s\n", orNone(m.BackupAgent))
 	fmt.Printf("components:              %d\n", len(m.Components))
 	for _, c := range m.Components {
 		fmt.Printf("  [%-9s] %-60s exported=%-6s permission=%-30s intent-filter=%v\n",
@@ -107,6 +123,13 @@ func tristateLabel(t manifest.Tristate) string {
 	}
 }
 
+func targetSdkLabel(v *int) string {
+	if v == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%d", *v)
+}
+
 func orNone(s string) string {
 	if s == "" {
 		return "(none)"
@@ -127,11 +150,20 @@ type jsonReport struct {
 	PackageName           string          `json:"package_name"`
 	UsesCleartextTraffic  string          `json:"uses_cleartext_traffic"`
 	NetworkSecurityConfig string          `json:"network_security_config"`
+	AllowBackup           string          `json:"allow_backup"`
+	Debuggable            string          `json:"debuggable"`
+	TestOnly              string          `json:"test_only"`
+	FullBackupContent     string          `json:"full_backup_content,omitempty"`
+	DataExtractionRules   string          `json:"data_extraction_rules,omitempty"`
+	BackupAgent           string          `json:"backup_agent,omitempty"`
+	TargetSdkVersion      *int            `json:"target_sdk_version,omitempty"`
 	Components            []jsonComponent `json:"components"`
 	Dex                   []jsonDexFile   `json:"dex"`
 	ScanSurface           jsonScanSurface `json:"scan_surface"`
 	MG001Findings         []jsonFinding   `json:"mg001_findings"`
 	MG002Findings         []jsonFinding   `json:"mg002_findings"`
+	MG003Findings         []jsonFinding   `json:"mg003_findings"`
+	MG010Findings         []jsonFinding   `json:"mg010_findings"`
 }
 
 type jsonScanSurface struct {
@@ -200,11 +232,18 @@ func toJSONFindings(findings []engine.Finding) []jsonFinding {
 	return out
 }
 
-func printJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings, mg002Findings []engine.Finding, surface scanSurfaceCounts) {
+func printJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings, mg002Findings, mg003Findings, mg010Findings []engine.Finding, surface scanSurfaceCounts) {
 	rep := jsonReport{
 		PackageName:           m.PackageName,
 		UsesCleartextTraffic:  tristateLabel(m.UsesCleartextTraffic),
 		NetworkSecurityConfig: m.NetworkSecurityConfig,
+		AllowBackup:           tristateLabel(m.AllowBackup),
+		Debuggable:            tristateLabel(m.Debuggable),
+		TestOnly:              tristateLabel(m.TestOnly),
+		FullBackupContent:     m.FullBackupContent,
+		DataExtractionRules:   m.DataExtractionRules,
+		BackupAgent:           m.BackupAgent,
+		TargetSdkVersion:      m.TargetSdkVersion,
 		ScanSurface: jsonScanSurface{
 			DexStringsUnattributed: surface.dexStrings,
 			ResourceStrings:        surface.resourceStrings,
@@ -213,6 +252,8 @@ func printJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings, mg0
 		},
 		MG001Findings: toJSONFindings(mg001Findings),
 		MG002Findings: toJSONFindings(mg002Findings),
+		MG003Findings: toJSONFindings(mg003Findings),
+		MG010Findings: toJSONFindings(mg010Findings),
 	}
 	for _, c := range m.Components {
 		rep.Components = append(rep.Components, jsonComponent{

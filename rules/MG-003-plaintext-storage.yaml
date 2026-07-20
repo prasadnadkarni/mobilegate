@@ -1,0 +1,122 @@
+# MG-003 — Plaintext sensitive storage (backup-exposure scope)
+#
+# Spec: mobile-security-release-gate-build-prompt-v2.1.md, "MG-003".
+#
+# Scoped to android:allowBackup only. This is narrower than the spec's
+# literal MG-003 text, which also names MODE_WORLD_READABLE/
+# MODE_WORLD_WRITEABLE (integer constants passed to openFileOutput/
+# getSharedPreferences at call sites), unscoped external-storage writes,
+# and storage-API encryption configuration. All three require reading DEX
+# method bodies — this parser is deliberately string-pool-only (CLAUDE.md:
+# no decompilation to Smali, no bytecode/opcode analysis) — the same wall
+# MG-002 hit with a custom TrustManager's checkServerTrusted body. There is
+# no string-pool-only way to see which integer constant a call site passed
+# or what a method actually wrote, so none of those three ship in v1.
+# Content-based inference ("this looks like a token going into
+# SharedPreferences") is explicitly out of scope for the same reason
+# CLAUDE.md rules it out generally: it's a content guess, not a
+# configuration fact, and belongs at most in a future warning-tier rule —
+# never blocking.
+#
+# What's left, and what this rule actually is: android:allowBackup is a
+# manifest attribute, deterministic, and a real finding — when backup is
+# enabled with no scoping, the app's private data directory is fully
+# extractable via `adb backup` (subject to the targetSdk gate below) or
+# cloud backup, with no code path required at all. debuggable and
+# testOnly were also manifest-level and reachable, but are NOT in this
+# rule — see rules/MG-010-debug-build-artifact.yaml: different threat
+# model (build-artifact hygiene, not storage exposure) and a different
+# remediation owner, so bundling them here would muddy the gate-category
+# framing.
+id: MG-003
+name: Plaintext sensitive storage (backup exposure)
+severity: high
+confidence: high
+platform: android
+blocking: true
+masvs: MASVS-STORAGE-2
+cwe: CWE-530
+description: >
+  The app's private data directory is extractable via backup (adb
+  backup/restore, and/or cloud auto-backup) with no scoping in place:
+  android:allowBackup is explicitly true, or absent (which defaults to
+  true on every Android version) with no fullBackupContent/
+  dataExtractionRules override and no custom backupAgent.
+remediation: >
+  Set android:allowBackup="false" on <application> unless backup is a
+  genuine product requirement. If it is, scope it: reference an
+  android:fullBackupContent (legacy) or android:dataExtractionRules (API
+  31+) XML resource that excludes sensitive files/shared-prefs keys, or
+  supply a custom android:backupAgent that implements that exclusion in
+  code. This rule does not verify that a referenced scoping file or
+  custom agent is actually sufficient — see the override-suppression note
+  below for why.
+
+# Signals (see CLAUDE.md multi-signal model). Three subtypes
+# (internal/engine's SignalAllowBackupExplicit /
+# SignalAllowBackupImplicitBlock / SignalAllowBackupImplicitWarn), not
+# two — an explicit opt-in and an implicit platform default both end in
+# the same effective exposure, but imply different developer intent and,
+# for the implicit case, different severity depending on target platform
+# version:
+#
+#   1. allow-backup-explicit: android:allowBackup="true" is present on
+#      <application>. A deliberate opt-in. Fires regardless of
+#      targetSdkVersion — this is not the platform default kicking in,
+#      it's a developer choosing it, so the API-31 adb-backup narrowing
+#      (see signal 3) doesn't soften this one: the developer asked for
+#      backup, and cloud/D2D backup still apply at any target SDK.
+#
+#   2. allow-backup-implicit-low-target-sdk: android:allowBackup is
+#      absent (defaults to true — unlike usesCleartextTraffic, this
+#      default has never changed across Android versions) AND
+#      targetSdkVersion < 31. Below API 31, `adb backup` extracts app
+#      data unconditionally for any backup-eligible app, debuggable or
+#      not — so an implicit, un-thought-about default is just as exposed
+#      as an explicit opt-in for these apps. Blocking.
+#
+#   3. allow-backup-implicit-narrowed-by-target-sdk:
+#      android:allowBackup is absent AND targetSdkVersion >= 31. From API
+#      31 (Android 12), `adb backup`/`adb restore` excludes app data
+#      unless the app is also debuggable — closing the primary
+#      local-extraction path for a non-debuggable release build on a
+#      modern target. Cloud backup and device-to-device transfer can
+#      still apply, so the exposure is narrowed, not eliminated: reported
+#      as a warning, not a block. See minADBBackupRestrictedSDK in
+#      internal/engine/storage.go.
+#
+# Override suppression (hasBackupOverride in internal/engine/storage.go):
+# if android:fullBackupContent references an XML resource (not the
+# literal "true", which Android treats as equivalent to the unscoped
+# default — not a real restriction), or is the literal "false"
+# (backup affirmatively disabled), or android:dataExtractionRules is set
+# (API 31+, always a resource reference, no boolean literal form), or a
+# custom android:backupAgent class is set — any of these suppress all
+# three signals above, unconditionally. This rule does NOT parse the
+# referenced XML resource or the custom agent's behavior to check whether
+# the scoping is actually sufficient. Deliberate precision-over-recall
+# call: the developer took a real, explicit action here, and guessing
+# wrong in the blocking direction (flagging a correctly-scoped backup
+# config as if it were unscoped) is a worse failure for this tool's
+# thesis than staying silent on a scoping file that turns out to be
+# insufficient — that residual risk is exactly the kind of judgment call
+# left to human review, not a heuristic this gate should attempt.
+#
+# NOT implemented (v1 scope decision, same disposition as the bytecode
+# gaps documented in MG-001/MG-002's YAMLs):
+#   - MODE_WORLD_READABLE / MODE_WORLD_WRITEABLE at openFileOutput/
+#     getSharedPreferences call sites — requires DEX method-body analysis.
+#   - Unscoped external-storage writes (getExternalStorageDirectory,
+#     unscoped MediaStore writes) — same wall, plus the platform's own
+#     scoped-storage enforcement (API 29+) already narrows this
+#     considerably at runtime, further reducing the value of a
+#     string-pool-only heuristic here.
+#   - Storage-API encryption configuration (EncryptedSharedPreferences,
+#     SQLCipher, Jetpack Security usage or absence thereof) — presence of
+#     a class reference is not evidence of correct use, and absence is
+#     not evidence of a problem (plenty of legitimate apps store nothing
+#     sensitive at rest). Same content-inference trap CLAUDE.md rules out
+#     generally.
+# Revisit only alongside a deliberate decision to add DEX bytecode
+# analysis capability generally — not as a one-off carve-out for this
+# rule, per the same discipline applied to MG-002's TrustManager gap.

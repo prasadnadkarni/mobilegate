@@ -1,7 +1,8 @@
 // Package manifest extracts the AndroidManifest.xml fields MobileGate's
 // rules need. It deliberately does not expose a general-purpose manifest
-// API: only the fields MG-002 (cleartext transport) and MG-004 (exported
-// components) depend on.
+// API: only the fields MG-002 (cleartext transport), MG-003 (backup
+// exposure), MG-004 (exported components), and MG-010 (debuggable/
+// test-only release build) depend on.
 //
 // It wraps github.com/shogo82148/androidbinary rather than that library's
 // own apk.Manifest struct, because apk.Manifest does not model
@@ -47,6 +48,24 @@ type Manifest struct {
 	// permits it only because it targets API < 28, where cleartext is
 	// the platform default with no explicit config at all.
 	TargetSdkVersion *int
+
+	// AllowBackup, Debuggable, TestOnly: see MG-003/MG-010. Tri-state for
+	// the same reason as UsesCleartextTraffic — AllowBackup in particular
+	// defaults to true when absent, so the parser must not collapse
+	// "absent" into "false" and silently hide that default.
+	AllowBackup Tristate
+	Debuggable  Tristate
+	TestOnly    Tristate
+
+	// FullBackupContent/DataExtractionRules/BackupAgent: empty if unset.
+	// May be a literal ("true"/"false", fullBackupContent only) or a
+	// resource reference (e.g. "@xml/backup_rules") — MG-003 treats a
+	// resource reference or a set BackupAgent as "developer took explicit
+	// action," without inspecting the referenced file's content (see that
+	// rule's YAML for why).
+	FullBackupContent   string
+	DataExtractionRules string
+	BackupAgent         string
 }
 
 // Component is one activity/service/receiver/provider entry.
@@ -127,6 +146,12 @@ type activityXML struct {
 type applicationXML struct {
 	UsesCleartextTraffic  optionalBool         `xml:"http://schemas.android.com/apk/res/android usesCleartextTraffic,attr"`
 	NetworkSecurityConfig androidbinary.String `xml:"http://schemas.android.com/apk/res/android networkSecurityConfig,attr"`
+	AllowBackup           optionalBool         `xml:"http://schemas.android.com/apk/res/android allowBackup,attr"`
+	Debuggable            optionalBool         `xml:"http://schemas.android.com/apk/res/android debuggable,attr"`
+	TestOnly              optionalBool         `xml:"http://schemas.android.com/apk/res/android testOnly,attr"`
+	FullBackupContent     androidbinary.String `xml:"http://schemas.android.com/apk/res/android fullBackupContent,attr"`
+	DataExtractionRules   androidbinary.String `xml:"http://schemas.android.com/apk/res/android dataExtractionRules,attr"`
+	BackupAgent           androidbinary.String `xml:"http://schemas.android.com/apk/res/android backupAgent,attr"`
 	Activities            []activityXML        `xml:"activity"`
 	Services              []activityXML        `xml:"service"`
 	Receivers             []activityXML        `xml:"receiver"`
@@ -174,6 +199,12 @@ func Parse(manifestBytes, resourcesArsc []byte) (*Manifest, error) {
 		UsesCleartextTraffic:  tristateFrom(raw.App.UsesCleartextTraffic),
 		NetworkSecurityConfig: mustString(raw.App.NetworkSecurityConfig),
 		TargetSdkVersion:      resolveTargetSdk(raw.UsesSDK),
+		AllowBackup:           tristateFrom(raw.App.AllowBackup),
+		Debuggable:            tristateFrom(raw.App.Debuggable),
+		TestOnly:              tristateFrom(raw.App.TestOnly),
+		FullBackupContent:     mustString(raw.App.FullBackupContent),
+		DataExtractionRules:   mustString(raw.App.DataExtractionRules),
+		BackupAgent:           mustString(raw.App.BackupAgent),
 	}
 
 	m.Components = append(m.Components, componentsFrom(KindActivity, raw.App.Activities)...)

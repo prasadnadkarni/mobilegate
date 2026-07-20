@@ -1,0 +1,80 @@
+# MG-010 — Debug/test build artifact shipped as a release candidate
+#
+# NOT in the spec's original catalog (mobile-security-release-gate-build-
+# prompt-v2.1.md defines MG-001 through MG-009). This rule ID is a
+# deliberate addition, made explicitly during MG-003 scoping: debuggable
+# and testOnly were originally proposed as part of MG-003 (plaintext
+# storage), but split out into their own rule because they're a
+# build-artifact-hygiene concern, not a storage-exposure one — different
+# threat model (accidental release of a debug/dev build vs. a storage
+# configuration decision), different remediation owner (release
+# engineering / CI pipeline config vs. app developer), and bundling them
+# under MG-003's storage framing would muddy what that rule is actually
+# about. See rules/MG-003-plaintext-storage.yaml's header for the other
+# half of that scoping decision.
+#
+# Both signals are manifest-level, deterministic, and reachable with the
+# current string-pool-only parser — no DEX method-body analysis needed.
+id: MG-010
+name: Debug/test build artifact shipped as release candidate
+severity: critical
+confidence: high
+platform: android
+blocking: true
+masvs: MASVS-RESILIENCE-2
+cwe: CWE-489
+description: >
+  The APK has android:debuggable="true" and/or android:testOnly="true"
+  set on <application> — attributes that should never be present on a
+  release candidate, regardless of what the app itself does or stores.
+remediation: >
+  Ensure the release build variant does not set android:debuggable="true"
+  (Android Gradle Plugin sets this automatically for debug build types —
+  verify the release signing/build config isn't accidentally reusing a
+  debug manifest or debug build type) and does not set
+  android:testOnly="true" (also AGP-managed; sub-projects/test APKs
+  should never be the artifact submitted to a release track).
+
+# Signals (see CLAUDE.md multi-signal model). Two, independent — an app
+# can have either, both, or neither, and each is its own finding even
+# when both fire on the same build:
+#
+#   1. debuggable-true: android:debuggable="true" is present on
+#      <application>. Probably the single highest-precision blocking
+#      signal in this entire tool: there is no legitimate reason for a
+#      release candidate to carry this attribute, it is trivially and
+#      deterministically detectable from the manifest alone, and its
+#      impact if shipped is severe — a debuggable app allows attaching a
+#      debugger (JDWP), arbitrary code injection into the process, and
+#      (per MG-003) reopens the `adb backup` local-extraction path even
+#      at high targetSdkVersion, since the API-31 backup restriction only
+#      applies to non-debuggable builds. Unlike MG-002/MG-003, there is
+#      no ambiguous or platform-default variant of this signal to
+#      distinguish: android:debuggable defaults to false, so its presence
+#      as true is always an explicit, deliberate flag — either a real
+#      developer mistake (release build config accidentally reusing debug
+#      settings) or a debug artifact submitted by accident. Either way,
+#      it should never reach a release track, which is exactly this
+#      tool's gate boundary.
+#
+#   2. test-only-true: android:testOnly="true" is present on
+#      <application>. The Android platform's own package installer
+#      refuses to install a testOnly app through normal channels (`adb
+#      install` requires the `-t` flag; the Play Store and most release
+#      channels reject it outright) — its presence on a candidate
+#      artifact submitted to this gate means, definitionally, that the
+#      artifact was never meant to reach a release track. Same
+#      determinism and precision profile as signal 1.
+#
+# No targetSdk dimension, unlike MG-002/MG-003: both attributes are
+# booleans with a fixed platform-wide meaning that does not change across
+# API levels, so there's no version-gated narrowing to model here.
+#
+# No override/suppression mechanism, unlike MG-003's backup-scoping
+# check: there is no legitimate manifest configuration that makes
+# android:debuggable="true" or android:testOnly="true" acceptable on a
+# release candidate. If a real, reviewed exception exists (e.g. an
+# internal QA distribution channel intentionally scanned through this
+# gate), that's a .mobilegate.yml suppress-with-mandatory-reason case
+# (spec's `ignore_rules`, build-order step 5), not a detector-level
+# carve-out.
