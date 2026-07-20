@@ -7,5 +7,24 @@
 /mobilegate
 /dist/
 
+# Local baseline files written during ad hoc/manual testing. A project
+# adopting baseline mode commits its OWN .mobilegate-baseline.yml
+# deliberately (see README) — this ignore is for scratch runs against
+# whatever APK happens to be lying around locally, not a statement that
+# baseline files in general shouldn't be tracked.
+/.mobilegate-baseline.yml
+
+# Claude Code's local session state (permission allowlist, absolute
+# local paths) — machine-specific, never meant to ship. Was previously
+# only excluded via this machine's global gitignore, which doesn't
+# travel with the repo; listed explicitly here so a fresh clone doesn't
+# pick it up either.
+.claude/
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+
 # macOS
 .DS_Store
