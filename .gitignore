@@ -1,0 +1,8 @@
+# Real APKs used for local dev-time parser verification. Never commit a
+# third party's binary to this repo — see testdata/real/README.md for how
+# to fetch one on demand.
+/testdata/real/*.apk
+
+# Build output
+/mobilegate
+/dist/
