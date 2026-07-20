@@ -14,6 +14,7 @@ import (
 
 	"github.com/prasadnadkarni/mobilegate/internal/engine"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/apk"
+	"github.com/prasadnadkarni/mobilegate/pkg/parser/arsc"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/dex"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/manifest"
 	"github.com/prasadnadkarni/mobilegate/rules"
@@ -53,22 +54,40 @@ func main() {
 		dexStrings = append(dexStrings, strs...)
 	}
 
-	findings, err := scanMG001(dexStrings, container.AssetFiles)
+	resourceStrings, err := arsc.ExtractGlobalStringPool(container.ResourcesArsc)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
 		os.Exit(1)
 	}
 
+	findings, err := scanMG001(dexStrings, resourceStrings, container.AssetFiles)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
+		os.Exit(1)
+	}
+
+	var dexUnattributed int
+	for _, s := range dexStrings {
+		if s.Usage == dex.Unattributed {
+			dexUnattributed++
+		}
+	}
+	scanSurface := scanSurfaceCounts{
+		dexStrings:      dexUnattributed, // only Unattributed strings are actually scanned — see ScanDexStrings
+		resourceStrings: len(resourceStrings),
+		assetFiles:      len(container.AssetFiles),
+	}
+
 	if *jsonOut {
-		printJSON(m, dexResults, findings)
+		printJSON(m, dexResults, findings, scanSurface)
 		return
 	}
-	printText(apkPath, m, dexResults, findings)
+	printText(apkPath, m, dexResults, findings, scanSurface)
 }
 
 // scanMG001 loads the embedded MG-001 rule and runs it against the
 // parser output. The only rule wired in at this build-order step.
-func scanMG001(dexStrings []dex.StringRef, assets []apk.AssetEntry) ([]engine.Finding, error) {
+func scanMG001(dexStrings []dex.StringRef, resourceStrings []arsc.PoolString, assets []apk.AssetEntry) ([]engine.Finding, error) {
 	data, err := rules.FS.ReadFile("MG-001-hardcoded-secret.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("loading MG-001 rule: %w", err)
@@ -84,10 +103,19 @@ func scanMG001(dexStrings []dex.StringRef, assets []apk.AssetEntry) ([]engine.Fi
 
 	var findings []engine.Finding
 	findings = append(findings, scanner.ScanDexStrings(dexStrings)...)
+	findings = append(findings, scanner.ScanResourceStrings(resourceStrings)...)
 	for _, a := range assets {
 		findings = append(findings, scanner.ScanAsset(a.Name, a.Data)...)
 	}
 	return findings, nil
+}
+
+// scanSurfaceCounts is reported alongside findings so "zero findings" can
+// be told apart from "nothing was scanned."
+type scanSurfaceCounts struct {
+	dexStrings      int
+	resourceStrings int
+	assetFiles      int
 }
 
 type dexFileResult struct {

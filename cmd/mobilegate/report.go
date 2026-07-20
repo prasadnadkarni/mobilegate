@@ -16,10 +16,12 @@ import (
 // with tens of thousands of strings.
 const maxSampleStrings = 15
 
-func printText(apkPath string, m *manifest.Manifest, results []dexFileResult, findings []engine.Finding) {
+func printText(apkPath string, m *manifest.Manifest, results []dexFileResult, findings []engine.Finding, surface scanSurfaceCounts) {
 	fmt.Printf("APK: %s\n\n", apkPath)
 
 	fmt.Println("== MG-001: Hardcoded production secret ==")
+	fmt.Printf("scan surface: %d DEX strings (unattributed only), %d resources.arsc strings, %d asset files\n",
+		surface.dexStrings, surface.resourceStrings, surface.assetFiles)
 	if len(findings) == 0 {
 		fmt.Println("no findings")
 	}
@@ -114,7 +116,14 @@ type jsonReport struct {
 	NetworkSecurityConfig string          `json:"network_security_config"`
 	Components            []jsonComponent `json:"components"`
 	Dex                   []jsonDexFile   `json:"dex"`
+	ScanSurface           jsonScanSurface `json:"scan_surface"`
 	Findings              []jsonFinding   `json:"findings"`
+}
+
+type jsonScanSurface struct {
+	DexStringsUnattributed int `json:"dex_strings_unattributed"`
+	ResourceStrings        int `json:"resource_strings"`
+	AssetFiles             int `json:"asset_files"`
 }
 
 type jsonFinding struct {
@@ -153,11 +162,16 @@ type jsonStringRef struct {
 	ClassType string `json:"class_type,omitempty"`
 }
 
-func printJSON(m *manifest.Manifest, results []dexFileResult, findings []engine.Finding) {
+func printJSON(m *manifest.Manifest, results []dexFileResult, findings []engine.Finding, surface scanSurfaceCounts) {
 	rep := jsonReport{
 		PackageName:           m.PackageName,
 		UsesCleartextTraffic:  tristateLabel(m.UsesCleartextTraffic),
 		NetworkSecurityConfig: m.NetworkSecurityConfig,
+		ScanSurface: jsonScanSurface{
+			DexStringsUnattributed: surface.dexStrings,
+			ResourceStrings:        surface.resourceStrings,
+			AssetFiles:             surface.assetFiles,
+		},
 	}
 	for _, f := range findings {
 		rep.Findings = append(rep.Findings, jsonFinding{

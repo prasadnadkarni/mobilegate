@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/prasadnadkarni/mobilegate/pkg/parser/arsc"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/dex"
 )
 
@@ -77,6 +78,23 @@ func (s *SecretScanner) ScanDexStrings(strs []dex.StringRef) []Finding {
 			continue
 		}
 		out = append(out, s.scanValue(sr.Value, sr.DexFile, fmt.Sprintf("string_ids[%d]", sr.Index))...)
+	}
+	return out
+}
+
+// ScanResourceStrings scans resources.arsc's global string pool — the
+// most common real-world location for a hardcoded Google/Firebase key:
+// the Google Services Gradle plugin generates google_api_key,
+// google_app_id, and gcm_defaultSenderId as string resources, and the
+// Maps SDK convention (@string/google_maps_key) is the same pattern.
+// Every entry is a resource *value* (see pkg/parser/arsc's doc comment
+// for why this reads only the global pool, not per-package type/key
+// names), so — unlike ScanDexStrings — there's no identifier-vs-data
+// distinction to filter on here.
+func (s *SecretScanner) ScanResourceStrings(strs []arsc.PoolString) []Finding {
+	var out []Finding
+	for _, ps := range strs {
+		out = append(out, s.scanValue(ps.Value, "resources.arsc", fmt.Sprintf("string_pool[%d]", ps.Index))...)
 	}
 	return out
 }

@@ -31,6 +31,7 @@ import (
 
 	"github.com/prasadnadkarni/mobilegate/internal/engine"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/apk"
+	"github.com/prasadnadkarni/mobilegate/pkg/parser/arsc"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/dex"
 	"github.com/prasadnadkarni/mobilegate/rules"
 )
@@ -102,10 +103,66 @@ func writeULEB128(buf *bytes.Buffer, v uint32) {
 	}
 }
 
+// buildMinimalArsc builds a resources.arsc containing only a
+// RES_TABLE_TYPE header immediately followed by a RES_STRING_POOL_TYPE
+// chunk (UTF-8 mode, matching real-world APKs — see
+// pkg/parser/arsc/arsc_test.go for UTF-16 coverage) — no packages, no
+// resource entries. This is exactly what MG-001's ARSC scan reads
+// (pkg/parser/arsc only ever looks at the global string pool), so it's
+// sufficient to exercise the real code path without needing a full,
+// realistic resource table.
+func buildMinimalArsc(strs []string) []byte {
+	const tableHeaderSize = 12
+	const poolHeaderSize = 28
+	poolOff := uint32(tableHeaderSize)
+	offsetTableStart := poolOff + poolHeaderSize
+	stringsStart := offsetTableStart + uint32(len(strs))*4 - poolOff
+
+	var data []byte
+	offsets := make([]uint32, len(strs))
+	for i, s := range strs {
+		offsets[i] = uint32(len(data))
+		data = append(data, arscLength(len(s))...) // utf16 char count (ASCII fixtures: same as byte length)
+		data = append(data, arscLength(len(s))...) // utf8 byte count
+		data = append(data, []byte(s)...)
+	}
+
+	poolChunkSize := poolHeaderSize + uint32(len(strs))*4 + uint32(len(data))
+	tableSize := tableHeaderSize + poolChunkSize
+
+	buf := make([]byte, tableSize)
+	binary.LittleEndian.PutUint16(buf[0:], 0x0002) // RES_TABLE_TYPE
+	binary.LittleEndian.PutUint16(buf[2:], tableHeaderSize)
+	binary.LittleEndian.PutUint32(buf[4:], tableSize)
+	binary.LittleEndian.PutUint16(buf[poolOff:], 0x0001) // RES_STRING_POOL_TYPE
+	binary.LittleEndian.PutUint16(buf[poolOff+2:], poolHeaderSize)
+	binary.LittleEndian.PutUint32(buf[poolOff+4:], poolChunkSize)
+	binary.LittleEndian.PutUint32(buf[poolOff+8:], uint32(len(strs))) // stringCount
+	binary.LittleEndian.PutUint32(buf[poolOff+16:], 0x100)            // UTF8_FLAG
+	binary.LittleEndian.PutUint32(buf[poolOff+20:], stringsStart)
+
+	for i, off := range offsets {
+		binary.LittleEndian.PutUint32(buf[offsetTableStart+uint32(i)*4:], off)
+	}
+	copy(buf[poolOff+stringsStart:], data)
+	return buf
+}
+
+// arscLength encodes n using resources.arsc's variable-length prefix
+// (1 byte, or 2 with the high bit set for n > 0x7F). Fixture strings
+// here are all short, but implemented for real rather than assumed.
+func arscLength(n int) []byte {
+	if n <= 0x7F {
+		return []byte{byte(n)}
+	}
+	return []byte{byte((n>>8)&0x7F) | 0x80, byte(n & 0xFF)}
+}
+
 type fixture struct {
-	name       string
-	dexStrings []string
-	assets     map[string][]byte
+	name            string
+	dexStrings      []string
+	resourceStrings []string
+	assets          map[string][]byte
 }
 
 func (f fixture) build(t *testing.T) *apk.Container {
@@ -127,6 +184,14 @@ func (f fixture) build(t *testing.T) *apk.Container {
 		t.Fatal(err)
 	}
 	w.Write(buildMinimalDex(t, f.dexStrings))
+
+	if len(f.resourceStrings) > 0 {
+		w, err = zw.Create("resources.arsc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Write(buildMinimalArsc(f.resourceStrings))
+	}
 
 	for name, content := range f.assets {
 		w, err = zw.Create(name)
@@ -178,6 +243,13 @@ func scanFixture(t *testing.T, s *engine.SecretScanner, c *apk.Container) []engi
 		}
 		findings = append(findings, s.ScanDexStrings(strs)...)
 	}
+	if len(c.ResourcesArsc) > 0 {
+		resStrs, err := arsc.ExtractGlobalStringPool(c.ResourcesArsc)
+		if err != nil {
+			t.Fatalf("arsc.ExtractGlobalStringPool: %v", err)
+		}
+		findings = append(findings, s.ScanResourceStrings(resStrs)...)
+	}
 	for _, a := range c.AssetFiles {
 		findings = append(findings, s.ScanAsset(a.Name, a.Data)...)
 	}
@@ -201,44 +273,55 @@ func TestMG001_PositiveFixtures(t *testing.T) {
 		wantPatternID string
 	}{
 		{
-			fixture{"aws_access_key_in_dex",
-				[]string{"normal string", awsKey}, nil},
+			fixture{name: "aws_access_key_in_dex",
+				dexStrings: []string{"normal string", awsKey}},
 			"aws-access-key-id",
 		},
 		{
-			fixture{"gcp_firebase_key_in_asset",
-				nil, map[string][]byte{
+			fixture{name: "gcp_firebase_key_in_asset",
+				assets: map[string][]byte{
 					"assets/config.json": []byte(fmt.Sprintf(`{"apiKey":"%s"}`, gcpKey)),
 				}},
 			"gcp-firebase-api-key",
 		},
 		{
-			fixture{"stripe_live_key_in_dex",
-				[]string{stripeKey}, nil},
+			// The most common real-world location for this exact
+			// pattern: the Google Services Gradle plugin generates
+			// google_api_key/google_app_id as <string> resources, and
+			// Maps SDK setup docs use @string/google_maps_key the same
+			// way — both compile into resources.arsc, not the DEX string
+			// pool or assets/.
+			fixture{name: "gcp_firebase_key_in_string_resource",
+				resourceStrings: []string{"app_name", "some other string", gcpKey, "yet another string"}},
+			"gcp-firebase-api-key",
+		},
+		{
+			fixture{name: "stripe_live_key_in_dex",
+				dexStrings: []string{stripeKey}},
 			"stripe-live-secret-key",
 		},
 		{
-			fixture{"github_pat_classic_in_asset",
-				nil, map[string][]byte{
+			fixture{name: "github_pat_classic_in_asset",
+				assets: map[string][]byte{
 					"assets/.env": []byte("GITHUB_TOKEN=" + ghClassic),
 				}},
 			"github-pat-classic",
 		},
 		{
-			fixture{"github_pat_fine_grained_in_dex",
-				[]string{ghFineGrained}, nil},
+			fixture{name: "github_pat_fine_grained_in_dex",
+				dexStrings: []string{ghFineGrained}},
 			"github-pat-fine-grained",
 		},
 		{
-			fixture{"slack_token_in_asset",
-				nil, map[string][]byte{
+			fixture{name: "slack_token_in_asset",
+				assets: map[string][]byte{
 					"assets/config.txt": []byte("slack=" + slackToken),
 				}},
 			"slack-token",
 		},
 		{
-			fixture{"private_key_header_in_asset",
-				nil, map[string][]byte{
+			fixture{name: "private_key_header_in_asset",
+				assets: map[string][]byte{
 					"assets/certs/fake.pem": []byte("-----BEGIN RSA PRIVATE KEY-----\nFAKEFAKEFAKE\n-----END RSA PRIVATE KEY-----"),
 				}},
 			"private-key-header",
@@ -310,6 +393,18 @@ func TestMG001_NegativeFixtures(t *testing.T) {
 			// AWS/GitHub/private-key prefixes are case-sensitive in real
 			// life; a lowercase near-match must not fire.
 			dexStrings: []string{"akia" + padDigits("testfakekey", 16), "GHP_" + padDigits("FAKE", 36)},
+		},
+		{
+			name: "innocuous_string_resources",
+			// The realistic bulk of resources.arsc's global string pool:
+			// ordinary app copy, resource key-adjacent literals, and a
+			// URL — none of it credential-shaped.
+			resourceStrings: []string{
+				"app_name", "Settings", "Cancel", "OK",
+				"Welcome to the app! Tap below to get started.",
+				"https://example.com/privacy-policy",
+				"v1.2.3",
+			},
 		},
 	}
 
