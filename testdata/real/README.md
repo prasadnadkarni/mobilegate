@@ -52,3 +52,33 @@ go run ./cmd/mobilegate testdata/real/com.simplemobiletools.flashlight_66.apk
 go run ./cmd/mobilegate testdata/real/org.schabi.newpipe_1013.apk   # multi-dex
 make oracle   # cross-checks manifest + DEX string counts against apkanalyzer/aapt2/dexdump — see tools/oracle/README.md
 ```
+
+## MG-001 corpus — batch 1
+
+A separate, larger set of real APKs for measuring MG-001's recall/precision
+and the 90s/1GB performance targets against real-world scan surface —
+not parser-oracle fixtures like the two above. Deliberately varied app
+categories and sizes (three over 50 MB) rather than ten similar
+utilities:
+
+```sh
+sh testdata/real/fetch-corpus.sh
+```
+
+| App | Package | File | SHA-256 |
+|---|---|---|---|
+| Firefox (Fennec) — browser | `org.mozilla.fennec_fdroid` | `org.mozilla.fennec_fdroid_1520620.apk` | `f53af67d4ea0a7b42c456f6c6a4302e17d6ba30684482feaf20c8ef7b63ba210` |
+| VLC — media player | `org.videolan.vlc` | `org.videolan.vlc_13070108.apk` | `4a9144fadfd8606cc5c0e9db892fd24846b7b2efeb1630db5377955d1612b119` |
+| Conversations — XMPP messenger | `eu.siacs.conversations` | `eu.siacs.conversations_4217804.apk` | `dac24c81ba4ca0bbb73dfa11c42eaa90c34fd8375941a0874b37159e2ac07e4d` |
+| Nextcloud — cloud storage client | `com.nextcloud.client` | `com.nextcloud.client_340000190.apk` | `005bc619ca577baee8da6e3c160bb99e6a172c46c6b5f9feddfe123fcfd01b07` |
+| AntennaPod — podcast player | `de.danoeh.antennapod` | `de.danoeh.antennapod_3110495.apk` | `8faee459f952e62e5c12be18620911b01c15b5fa0ee67768dcf8ae1e1a68b09c` |
+| Termux — terminal emulator | `com.termux` | `com.termux_1002.apk` | `e6265a57eb5ca363808488e3b01955958bed93bc0c8a0d281849b363b11027ec` |
+| Dolphin — GameCube/Wii emulator | `org.dolphinemu.dolphinemu` | `org.dolphinemu.dolphinemu_42460.apk` | `5279425e01c552ba6cde1adc7f08f1c1f5b8f9271c2418a4ad849ee4106ee719` |
+| KeePassDX — password manager | `com.kunzisoft.keepass.libre` | `com.kunzisoft.keepass.libre_44500.apk` | `23d6917bf11fcde7f4a2b8072faa893df857955d6201244e370357bd7d65c598` |
+| Material Files — file manager | `me.zhanghai.android.files` | `me.zhanghai.android.files_39.apk` | `ebc5138b6f713f0f73b5467a1a8a4ac3ccfcb2e82135372665b6811a8947641f` |
+| Tusky — Mastodon client | `com.keylesspalace.tusky` | `com.keylesspalace.tusky_142.apk` | `3e8fcc49a80d4c30ab6f6037e51402c77e2694d27ec19ae5b8a93cd08b6caffa` |
+
+Results reported in the batch-1 corpus run (see project history / status
+report — not duplicated here since these numbers are a point-in-time
+measurement, not a fixed spec, and will drift as F-Droid ships new
+versions of these apps).
