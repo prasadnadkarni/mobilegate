@@ -1,22 +1,36 @@
-// Package arsc extracts resources.arsc's global string pool — the one
-// place every string-typed resource *value* lives (e.g. the literal text
-// of a <string name="google_api_key">AIzaSy…</string> resource), as
-// opposed to resource type/key *names*, which live in separate per-package
+// Package arsc extracts the global string pool from Android's
+// chunk-based binary resource format — the one place every string-typed
+// resource *value* lives (e.g. the literal text of a
+// <string name="google_api_key">AIzaSy…</string> resource), as opposed
+// to resource type/key *names*, which live in separate per-package
 // string pools this package does not read.
 //
-// github.com/shogo82148/androidbinary (used for AndroidManifest.xml
-// parsing) has no public API to enumerate resources.arsc's string pool:
-// TableFile only exposes GetResource(id, config) and GetString(ref), both
-// of which require already knowing a specific ID — there is no
-// enumerator, and the fields that hold the parsed packages/pools are
-// unexported. Confirmed via `go doc` on the installed package before
-// writing this. Everything else about resources.arsc (per-package type
-// tables, resource ID resolution, configuration qualifiers) is
-// deliberately NOT reimplemented here — this package reads exactly one
-// chunk, the same discipline pkg/parser/dex applies to the DEX string
-// pool: minimal custom code for the one well-isolated structure a
-// maintained library's public API doesn't reach, not a second resource
-// table parser.
+// Despite the package name, this reads two container formats, not just
+// resources.arsc: a resources.arsc resource table (leading chunk type
+// RES_TABLE_TYPE) and a compiled binary XML document such as
+// AndroidManifest.xml (leading chunk type RES_XML_TYPE) — e.g. a literal
+// <meta-data android:value="AIzaSy…"/>, as opposed to the
+// @string/google_maps_key reference form resources.arsc covers. Both
+// container formats are immediately followed by the identical
+// ResChunkHeader/ResStringPool sub-format, so the same reader below
+// handles both; there is no second parser for the manifest's string
+// pool, deliberately, per the same "verify before reimplementing"
+// reasoning that produced this package in the first place (below).
+//
+// github.com/shogo82148/androidbinary (used for AndroidManifest.xml's
+// structured-field parsing elsewhere in this codebase) has no public API
+// to enumerate either container's string pool: TableFile only exposes
+// GetResource(id, config) and GetString(ref), both of which require
+// already knowing a specific ID — there is no enumerator, and the fields
+// that hold the parsed packages/pools are unexported. Confirmed via
+// `go doc` on the installed package before writing this. Everything else
+// about these formats (per-package resource type tables, resource ID
+// resolution, configuration qualifiers, the actual XML element/attribute
+// tree) is deliberately NOT reimplemented here — this package reads
+// exactly one chunk, the same discipline pkg/parser/dex applies to the
+// DEX string pool: minimal custom code for the one well-isolated
+// structure a maintained library's public API doesn't reach, not a
+// second resource table or XML parser.
 package arsc
 
 import (
@@ -32,8 +46,9 @@ import (
 const MaxDecodedStringBytes = 50 * 1024 * 1024
 
 const (
-	chunkHeaderSize      = 8 // type(2) + headerSize(2) + size(4)
-	resTableType         = 0x0002
+	chunkHeaderSize      = 8      // type(2) + headerSize(2) + size(4)
+	resTableType         = 0x0002 // resources.arsc: ResTable_header (chunk header + packageCount)
+	resXMLType           = 0x0003 // compiled binary XML (e.g. AndroidManifest.xml): ResXMLTree_header (just the chunk header)
 	resStringPoolType    = 0x0001
 	utf8Flag             = 0x100
 	stringPoolHeaderSize = 28      // chunk header(8) + stringCount(4) + styleCount(4) + flags(4) + stringsStart(4) + stylesStart(4)
@@ -46,22 +61,24 @@ type PoolString struct {
 	Value string
 }
 
-// ExtractGlobalStringPool reads resources.arsc's top-level string pool —
-// the chunk immediately following the RES_TABLE_TYPE header — and
-// returns every string in it. Returns an empty, non-error result if the
-// file has no such chunk (a resource table with no string-valued
-// resources at all is unusual but not invalid).
+// ExtractGlobalStringPool reads the top-level string pool — the chunk
+// immediately following the outer container header — from either a
+// resources.arsc resource table or a compiled binary XML document (e.g.
+// AndroidManifest.xml), and returns every string in it. Returns an
+// empty, non-error result if the file has no such chunk (unusual but not
+// invalid: a resource table with no string-valued resources, or an XML
+// document with no strings at all).
 func ExtractGlobalStringPool(data []byte) ([]PoolString, error) {
-	if len(data) < chunkHeaderSize+4 { // chunk header + packageCount
-		return nil, fmt.Errorf("arsc: file too small to contain a table header (%d bytes)", len(data))
+	if len(data) < chunkHeaderSize {
+		return nil, fmt.Errorf("arsc: file too small to contain a container header (%d bytes)", len(data))
 	}
 
 	typ, headerSize, size, err := readChunkHeader(data, 0)
 	if err != nil {
 		return nil, fmt.Errorf("arsc: %w", err)
 	}
-	if typ != resTableType {
-		return nil, fmt.Errorf("arsc: not a resource table (chunk type 0x%04X, want 0x%04X)", typ, resTableType)
+	if typ != resTableType && typ != resXMLType {
+		return nil, fmt.Errorf("arsc: not a resource table or binary XML document (chunk type 0x%04X, want 0x%04X or 0x%04X)", typ, resTableType, resXMLType)
 	}
 	tableEnd := size
 	if tableEnd > uint32(len(data)) {

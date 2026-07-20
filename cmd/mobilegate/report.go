@@ -20,8 +20,8 @@ func printText(apkPath string, m *manifest.Manifest, results []dexFileResult, fi
 	fmt.Printf("APK: %s\n\n", apkPath)
 
 	fmt.Println("== MG-001: Hardcoded production secret ==")
-	fmt.Printf("scan surface: %d DEX strings (unattributed only), %d resources.arsc strings, %d asset files\n",
-		surface.dexStrings, surface.resourceStrings, surface.assetFiles)
+	fmt.Printf("scan surface: %d DEX strings (unattributed only), %d resources.arsc strings, %d AndroidManifest.xml strings, %d asset files\n",
+		surface.dexStrings, surface.resourceStrings, surface.manifestStrings, surface.assetFiles)
 	if len(findings) == 0 {
 		fmt.Println("no findings")
 	}
@@ -123,6 +123,7 @@ type jsonReport struct {
 type jsonScanSurface struct {
 	DexStringsUnattributed int `json:"dex_strings_unattributed"`
 	ResourceStrings        int `json:"resource_strings"`
+	ManifestStrings        int `json:"manifest_strings"`
 	AssetFiles             int `json:"asset_files"`
 }
 
@@ -170,6 +171,7 @@ func printJSON(m *manifest.Manifest, results []dexFileResult, findings []engine.
 		ScanSurface: jsonScanSurface{
 			DexStringsUnattributed: surface.dexStrings,
 			ResourceStrings:        surface.resourceStrings,
+			ManifestStrings:        surface.manifestStrings,
 			AssetFiles:             surface.assetFiles,
 		},
 	}

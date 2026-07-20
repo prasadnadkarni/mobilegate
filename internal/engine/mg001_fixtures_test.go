@@ -112,9 +112,25 @@ func writeULEB128(buf *bytes.Buffer, v uint32) {
 // sufficient to exercise the real code path without needing a full,
 // realistic resource table.
 func buildMinimalArsc(strs []string) []byte {
-	const tableHeaderSize = 12
+	const tableHeaderSize = 12 // chunk header(8) + packageCount(4)
+	return buildMinimalStringPoolContainer(0x0002, tableHeaderSize, strs)
+}
+
+// buildMinimalManifest builds an AndroidManifest.xml containing only a
+// RES_XML_TYPE header immediately followed by a RES_STRING_POOL_TYPE
+// chunk — no actual namespace/element/attribute tree nodes. MG-001's
+// manifest scan (like its ARSC scan) only ever reads the leading string
+// pool via the same pkg/parser/arsc reader, so this is sufficient to
+// exercise the real code path: a literal <meta-data
+// android:value="AIzaSy…"/> lands its value straight in this pool.
+func buildMinimalManifest(strs []string) []byte {
+	const xmlHeaderSize = 8 // chunk header only — no packageCount, unlike ResTable
+	return buildMinimalStringPoolContainer(0x0003, xmlHeaderSize, strs)
+}
+
+func buildMinimalStringPoolContainer(outerType uint16, outerHeaderSize uint32, strs []string) []byte {
 	const poolHeaderSize = 28
-	poolOff := uint32(tableHeaderSize)
+	poolOff := outerHeaderSize
 	offsetTableStart := poolOff + poolHeaderSize
 	stringsStart := offsetTableStart + uint32(len(strs))*4 - poolOff
 
@@ -128,12 +144,12 @@ func buildMinimalArsc(strs []string) []byte {
 	}
 
 	poolChunkSize := poolHeaderSize + uint32(len(strs))*4 + uint32(len(data))
-	tableSize := tableHeaderSize + poolChunkSize
+	outerSize := outerHeaderSize + poolChunkSize
 
-	buf := make([]byte, tableSize)
-	binary.LittleEndian.PutUint16(buf[0:], 0x0002) // RES_TABLE_TYPE
-	binary.LittleEndian.PutUint16(buf[2:], tableHeaderSize)
-	binary.LittleEndian.PutUint32(buf[4:], tableSize)
+	buf := make([]byte, outerSize)
+	binary.LittleEndian.PutUint16(buf[0:], outerType)
+	binary.LittleEndian.PutUint16(buf[2:], uint16(outerHeaderSize))
+	binary.LittleEndian.PutUint32(buf[4:], outerSize)
 	binary.LittleEndian.PutUint16(buf[poolOff:], 0x0001) // RES_STRING_POOL_TYPE
 	binary.LittleEndian.PutUint16(buf[poolOff+2:], poolHeaderSize)
 	binary.LittleEndian.PutUint32(buf[poolOff+4:], poolChunkSize)
@@ -162,6 +178,7 @@ type fixture struct {
 	name            string
 	dexStrings      []string
 	resourceStrings []string
+	manifestStrings []string
 	assets          map[string][]byte
 }
 
@@ -174,10 +191,10 @@ func (f fixture) build(t *testing.T) *apk.Container {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// MG-001 doesn't scan the manifest (see engine package notes / final
-	// report on scan-surface scope), so this only needs to exist for
-	// apk.Open to accept the zip as a valid APK.
-	w.Write([]byte("placeholder"))
+	// Always a real (if empty) binary-XML container, matching every real
+	// APK's manifest — scanFixture unconditionally scans it, the same
+	// way production always does, so it must actually parse.
+	w.Write(buildMinimalManifest(f.manifestStrings))
 
 	w, err = zw.Create("classes.dex")
 	if err != nil {
@@ -246,9 +263,14 @@ func scanFixture(t *testing.T, s *engine.SecretScanner, c *apk.Container) []engi
 	if len(c.ResourcesArsc) > 0 {
 		resStrs, err := arsc.ExtractGlobalStringPool(c.ResourcesArsc)
 		if err != nil {
-			t.Fatalf("arsc.ExtractGlobalStringPool: %v", err)
+			t.Fatalf("arsc.ExtractGlobalStringPool(resources.arsc): %v", err)
 		}
 		findings = append(findings, s.ScanResourceStrings(resStrs)...)
+	}
+	if manStrs, err := arsc.ExtractGlobalStringPool(c.Manifest); err != nil {
+		t.Fatalf("arsc.ExtractGlobalStringPool(manifest): %v", err)
+	} else {
+		findings = append(findings, s.ScanManifestStrings(manStrs)...)
 	}
 	for _, a := range c.AssetFiles {
 		findings = append(findings, s.ScanAsset(a.Name, a.Data)...)
@@ -293,6 +315,17 @@ func TestMG001_PositiveFixtures(t *testing.T) {
 			// pool or assets/.
 			fixture{name: "gcp_firebase_key_in_string_resource",
 				resourceStrings: []string{"app_name", "some other string", gcpKey, "yet another string"}},
+			"gcp-firebase-api-key",
+		},
+		{
+			// The other common real-world location: a literal
+			// <meta-data android:name="com.google.android.geo.API_KEY"
+			// android:value="AIzaSy…"/> in the manifest itself (typical
+			// for Maps SDK setup), as opposed to the @string/ reference
+			// form above — the value lands straight in the manifest's
+			// own binary-XML string pool, never touching resources.arsc.
+			fixture{name: "gcp_firebase_key_literal_in_manifest_metadata",
+				manifestStrings: []string{"meta-data", "com.google.android.geo.API_KEY", gcpKey, "application"}},
 			"gcp-firebase-api-key",
 		},
 		{
@@ -404,6 +437,18 @@ func TestMG001_NegativeFixtures(t *testing.T) {
 				"Welcome to the app! Tap below to get started.",
 				"https://example.com/privacy-policy",
 				"v1.2.3",
+			},
+		},
+		{
+			name: "innocuous_manifest_strings",
+			// The realistic bulk of a manifest's own string pool: tag
+			// and attribute names, package/class names, ordinary
+			// meta-data values — none of it credential-shaped.
+			manifestStrings: []string{
+				"application", "activity", "meta-data", "exported",
+				"com.example.app.MainActivity",
+				"com.example.app.SomeLibraryInitProvider",
+				"1.0.0",
 			},
 		},
 	}

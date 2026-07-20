@@ -12,10 +12,28 @@ import (
 // never reads them.
 func buildTable(t *testing.T, strs []string, utf8 bool) []byte {
 	t.Helper()
-
 	const tableHeaderSize = 12 // chunk header(8) + packageCount(4)
+	return buildContainer(t, resTableType, tableHeaderSize, strs, utf8)
+}
+
+// buildXMLDoc constructs a minimal binary XML document: a RES_XML_TYPE
+// header (just the chunk header — no packageCount, unlike ResTable)
+// immediately followed by one RES_STRING_POOL_TYPE chunk. No actual XML
+// tree nodes (namespaces/elements/attributes) — ExtractGlobalStringPool
+// never reads them, only the leading string pool, so a real
+// AndroidManifest.xml's tree structure isn't needed to exercise this
+// code path.
+func buildXMLDoc(t *testing.T, strs []string, utf8 bool) []byte {
+	t.Helper()
+	const xmlHeaderSize = 8 // chunk header only
+	return buildContainer(t, resXMLType, xmlHeaderSize, strs, utf8)
+}
+
+func buildContainer(t *testing.T, outerType uint16, outerHeaderSize uint32, strs []string, utf8 bool) []byte {
+	t.Helper()
+
 	const poolHeaderSize = 28
-	poolOff := uint32(tableHeaderSize)
+	poolOff := outerHeaderSize
 	offsetTableStart := poolOff + poolHeaderSize
 	stringsStart := offsetTableStart + uint32(len(strs))*4 - poolOff // relative to poolOff
 
@@ -39,13 +57,13 @@ func buildTable(t *testing.T, strs []string, utf8 bool) []byte {
 	}
 
 	poolChunkSize := poolHeaderSize + uint32(len(strs))*4 + uint32(len(data))
-	tableSize := tableHeaderSize + poolChunkSize
+	outerSize := outerHeaderSize + poolChunkSize
 
-	buf := make([]byte, tableSize)
-	// table header
-	binary.LittleEndian.PutUint16(buf[0:], resTableType)
-	binary.LittleEndian.PutUint16(buf[2:], tableHeaderSize)
-	binary.LittleEndian.PutUint32(buf[4:], tableSize)
+	buf := make([]byte, outerSize)
+	// outer container header
+	binary.LittleEndian.PutUint16(buf[0:], outerType)
+	binary.LittleEndian.PutUint16(buf[2:], uint16(outerHeaderSize))
+	binary.LittleEndian.PutUint32(buf[4:], outerSize)
 	// pool chunk header
 	binary.LittleEndian.PutUint16(buf[poolOff:], resStringPoolType)
 	binary.LittleEndian.PutUint16(buf[poolOff+2:], poolHeaderSize)
@@ -109,6 +127,23 @@ func TestExtractGlobalStringPool_UTF16(t *testing.T) {
 	assertStringsMatch(t, got, strs)
 }
 
+// TestExtractGlobalStringPool_BinaryXMLContainer exercises the
+// RES_XML_TYPE path (AndroidManifest.xml's own container format), not
+// just RES_TABLE_TYPE (resources.arsc) — the two have different outer
+// header sizes (8 vs 12 bytes) and this proves headerSize is read from
+// the file rather than assumed.
+func TestExtractGlobalStringPool_BinaryXMLContainer(t *testing.T) {
+	strs := []string{"theme", "android:value", "AIzaSyFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE", "meta-data"}
+	for _, utf8 := range []bool{true, false} {
+		data := buildXMLDoc(t, strs, utf8)
+		got, err := ExtractGlobalStringPool(data)
+		if err != nil {
+			t.Fatalf("utf8=%v: ExtractGlobalStringPool: %v", utf8, err)
+		}
+		assertStringsMatch(t, got, strs)
+	}
+}
+
 func TestExtractGlobalStringPool_LongStringOver127Bytes(t *testing.T) {
 	// Exercises the 2-byte length-prefix path (values > 0x7F) in both
 	// the UTF-8 byte-length and UTF-16 char-count encodings.
@@ -149,7 +184,7 @@ func TestExtractGlobalStringPool_RejectsTruncatedHeader(t *testing.T) {
 
 func TestExtractGlobalStringPool_RejectsWrongChunkType(t *testing.T) {
 	buf := make([]byte, 16)
-	binary.LittleEndian.PutUint16(buf[0:], 0x0003) // not RES_TABLE_TYPE
+	binary.LittleEndian.PutUint16(buf[0:], 0x0099) // neither RES_TABLE_TYPE nor RES_XML_TYPE
 	binary.LittleEndian.PutUint16(buf[2:], 12)
 	binary.LittleEndian.PutUint32(buf[4:], 16)
 	if _, err := ExtractGlobalStringPool(buf); err == nil {

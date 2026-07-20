@@ -99,6 +99,22 @@ func (s *SecretScanner) ScanResourceStrings(strs []arsc.PoolString) []Finding {
 	return out
 }
 
+// ScanManifestStrings scans AndroidManifest.xml's own binary-XML string
+// pool — the other place a hardcoded key shows up alongside
+// resources.arsc: a literal <meta-data android:value="AIzaSy…"/> (common
+// for Maps API keys) puts the key straight into the manifest's own pool,
+// not resources.arsc, since it's never routed through a @string/
+// reference. Same pool format as ScanResourceStrings reads
+// (pkg/parser/arsc handles both container types with one reader), same
+// lack of an identifier-vs-data distinction to filter on.
+func (s *SecretScanner) ScanManifestStrings(strs []arsc.PoolString) []Finding {
+	var out []Finding
+	for _, ps := range strs {
+		out = append(out, s.scanValue(ps.Value, "AndroidManifest.xml", fmt.Sprintf("string_pool[%d]", ps.Index))...)
+	}
+	return out
+}
+
 // ScanAsset scans one assets/ file's raw content, line by line, unless
 // its extension is in the rule's binary-asset exclusion zone — those are
 // never inspected at all, not matched-then-discarded.

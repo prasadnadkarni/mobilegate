@@ -60,7 +60,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	findings, err := scanMG001(dexStrings, resourceStrings, container.AssetFiles)
+	manifestStrings, err := arsc.ExtractGlobalStringPool(container.Manifest)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
+		os.Exit(1)
+	}
+
+	findings, err := scanMG001(dexStrings, resourceStrings, manifestStrings, container.AssetFiles)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
 		os.Exit(1)
@@ -75,6 +81,7 @@ func main() {
 	scanSurface := scanSurfaceCounts{
 		dexStrings:      dexUnattributed, // only Unattributed strings are actually scanned — see ScanDexStrings
 		resourceStrings: len(resourceStrings),
+		manifestStrings: len(manifestStrings),
 		assetFiles:      len(container.AssetFiles),
 	}
 
@@ -87,7 +94,7 @@ func main() {
 
 // scanMG001 loads the embedded MG-001 rule and runs it against the
 // parser output. The only rule wired in at this build-order step.
-func scanMG001(dexStrings []dex.StringRef, resourceStrings []arsc.PoolString, assets []apk.AssetEntry) ([]engine.Finding, error) {
+func scanMG001(dexStrings []dex.StringRef, resourceStrings, manifestStrings []arsc.PoolString, assets []apk.AssetEntry) ([]engine.Finding, error) {
 	data, err := rules.FS.ReadFile("MG-001-hardcoded-secret.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("loading MG-001 rule: %w", err)
@@ -104,6 +111,7 @@ func scanMG001(dexStrings []dex.StringRef, resourceStrings []arsc.PoolString, as
 	var findings []engine.Finding
 	findings = append(findings, scanner.ScanDexStrings(dexStrings)...)
 	findings = append(findings, scanner.ScanResourceStrings(resourceStrings)...)
+	findings = append(findings, scanner.ScanManifestStrings(manifestStrings)...)
 	for _, a := range assets {
 		findings = append(findings, scanner.ScanAsset(a.Name, a.Data)...)
 	}
@@ -115,6 +123,7 @@ func scanMG001(dexStrings []dex.StringRef, resourceStrings []arsc.PoolString, as
 type scanSurfaceCounts struct {
 	dexStrings      int
 	resourceStrings int
+	manifestStrings int
 	assetFiles      int
 }
 

@@ -96,3 +96,25 @@ divergence.
 both fixtures with an exact one-string diff naming the specific dropped
 string (e.g. `only in aapt2's dump: "Urinishlar soni ko'payib ketdi..."`).
 Reverted before committing anything.
+
+## Manifest string pool oracle (`manifest_strings_oracle_test.go`)
+
+`pkg/parser/arsc` reads two container formats, not just resources.arsc:
+AndroidManifest.xml's own binary-XML string pool (RES_XML_TYPE) shares
+the identical ResChunkHeader/ResStringPool sub-format resources.arsc
+(RES_TABLE_TYPE) uses, so the same reader handles both rather than a
+second one being written — see that package's doc comment. `aapt2 dump
+xmlstrings <apk> --file AndroidManifest.xml` is the XML-specific sibling
+of `aapt2 dump strings`, and this test reuses arsc_oracle_test.go's
+`parseAapt2DumpStrings`/`diffMultiset` helpers directly, since the output
+format and the multiset-not-index-order rationale are identical (both
+real fixtures happened to come back in matching order here, but the
+comparison doesn't rely on that). Confirmed on both real fixtures: 130
+and 252 strings, zero divergence — and this is the one that exercised the
+UTF-16 pool-encoding path against real input for the first time (both
+resources.arsc fixtures happened to be UTF-8; both manifests are UTF-16).
+
+**Verified it actually catches regressions:** same off-by-one mutation as
+the ARSC oracle above, ran `make oracle`, failed on both fixtures with an
+exact one-string diff (`only in aapt2's dump: "uses-sdk"` /
+`"ytprivate.com"`). Reverted before committing anything.
