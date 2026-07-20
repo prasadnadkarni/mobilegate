@@ -1,0 +1,126 @@
+# MG-002 — Cleartext / accept-all transport
+#
+# Spec: mobile-security-release-gate-build-prompt-v2.1.md, "MG-002".
+#
+# Unlike MG-001, this is not a pattern-matching rule: there is no
+# `patterns`/`exclusions`/`entropy` section, because there is nothing to
+# regex-match. Every signal below is a structural check against parsed
+# manifest and network_security_config.xml data — deterministic, not
+# probabilistic — so the signal logic lives in Go
+# (internal/engine/transport.go), not as data here. This file is rule
+# metadata (severity, MASVS/CWE mapping, blocking status) plus the record
+# of what's in and out of scope, same as MG-001's YAML documents its own
+# scope decisions.
+id: MG-002
+name: Cleartext / accept-all transport
+severity: critical
+confidence: high
+platform: android
+blocking: true
+masvs: MASVS-NETWORK-1
+cwe: CWE-319
+description: >
+  The app permits cleartext (unencrypted HTTP) network traffic, either
+  globally via the manifest or explicitly via
+  network_security_config.xml, in a way that reaches a first-party
+  domain (or, for a global <base-config> opt-in, unconditionally).
+remediation: >
+  Set android:usesCleartextTraffic="false" (the platform default on API
+  28+; explicit is still clearer than relying on it), and ensure
+  network_security_config.xml does not set
+  cleartextTrafficPermitted="true" on any <base-config> or on a
+  <domain-config> covering a first-party domain. If cleartext to a
+  specific domain is a genuine product requirement (e.g. a self-hosted
+  server whose address the user supplies, or Tor .onion routing where
+  standard TLS/CA validation doesn't apply), suppress the specific
+  finding in .mobilegate.yml with a documented reason — do not disable
+  the rule, and do not remove the domain-config, since that is the
+  actual security control working as configured.
+
+# Signals (see CLAUDE.md multi-signal model). Four subtypes, reported as
+# genuinely distinct findings (internal/engine's SignalManifestExplicit /
+# SignalManifestImplicitLowSDK / SignalNSCDomainConfig /
+# SignalNSCBaseConfig) — never collapsed into one, because each implies a
+# different developer decision (or absence of one) and a different
+# remediation:
+#
+#   1. manifest-explicit-cleartext: android:usesCleartextTraffic="true"
+#      is present on <application>. A deliberate, app-wide opt-in.
+#
+#   2. manifest-implicit-cleartext-low-target-sdk:
+#      android:usesCleartextTraffic is absent AND targetSdkVersion < 28.
+#      Not a decision at all — it's the Android platform's own default
+#      for apps that haven't moved past API 27. The finding is identical
+#      in effect (cleartext is permitted) but the remediation is
+#      different ("bump targetSdkVersion or add the attribute
+#      explicitly" vs. "remove the attribute you deliberately added"),
+#      so it must not be reported as the same thing as signal 1.
+#      targetSdkVersion is recorded on every MG-002 finding (not just
+#      this one) since it's relevant context regardless of which signal
+#      fired — an app already on API 34 taking an explicit cleartext
+#      opt-in reads differently than one on API 27 that never engaged
+#      with the setting either way.
+#
+#   3. network-security-config-domain: a <domain-config
+#      cleartextTrafficPermitted="true"> block whose <domain> entries
+#      include at least one first-party domain (exact match, or a
+#      subdomain when includeSubdomains="true" — see
+#      internal/engine.firstPartyMatch). First-party domains come
+#      exclusively from .mobilegate.yml's policy.first_party_domains
+#      (internal/config) — never inferred (e.g. from the app's own
+#      package name) — so with no config file, this signal structurally
+#      cannot fire. Third-party SDK hosts (ad networks, analytics, a Tor
+#      .onion domain, etc.) are never flagged, by construction: they're
+#      simply not in the allowlist.
+#
+#   4. network-security-config-base: a <base-config
+#      cleartextTrafficPermitted="true"> block. Unconditional — no domain
+#      scoping exists at this level, so no first-party check applies; if
+#      it's set, cleartext is permitted for everything not overridden by
+#      a more specific <domain-config>. Originally scoped OUT of v1 (the
+#      spec's "permits cleartext for first-party domains" language reads
+#      as domain-scoped), reversed after MG-002 corpus batch 1: 4 of 6
+#      real network_security_config files in a 10-app sample were
+#      base-config-only, most plausibly because those apps
+#      (self-hosted-server clients, arbitrary-feed readers) have a
+#      genuine product need for user-supplied cleartext hosts — but an
+#      unconditional cleartext allowance is strictly worse than a
+#      domain-scoped one, so catching the narrow case while missing the
+#      broad one would have been backwards. Detected honestly regardless
+#      of whether it's "probably legitimate": this rule does not attempt
+#      to infer legitimate use (see below) — that judgment belongs to a
+#      human reviewer via suppression-with-justification, not to a
+#      heuristic baked into the detector.
+#
+# NOT implemented (v1 scope decision, same disposition as lib/*.so in
+# MG-001): a custom TrustManager/HostnameVerifier that accepts all
+# certificates/hosts. Spec lists this as MG-002's third signal, but
+# detecting an accept-all *implementation* requires DEX method-body/
+# bytecode analysis — this parser is deliberately string-pool-only
+# (CLAUDE.md: "You do NOT need decompilation to Smali... do not let it
+# grow into one"). A class referencing X509TrustManager or
+# HostnameVerifier in its type/interface list is NOT evidence of an
+# accept-all implementation — legitimate TrustManager implementations are
+# common, including ones the platform itself provides — and there is no
+# string-pool-only way to distinguish "checkServerTrusted with an empty
+# body" from "checkServerTrusted with real validation." Flagging on the
+# interface reference alone would be exactly the single weak signal
+# CLAUDE.md's multi-signal rule forbids. Needs real bytecode analysis
+# (opcode-level, is-this-method-body-effectively-empty), which is out of
+# scope for this parser and this rule. Revisit only alongside a
+# deliberate decision to add bytecode analysis capability generally, not
+# as a special case carved out for this one rule.
+#
+# Also deliberately NOT implemented: any heuristic that infers "this app
+# legitimately needs cleartext" (e.g. from its category, its permissions,
+# or the shape of its domain list) to suppress a finding automatically.
+# That inference is unfalsifiable from static analysis and would be a
+# trivial bypass in the flagship rule of a tool whose entire value
+# proposition is precision — a developer wanting to hide a real cleartext
+# problem would just shape it to look legitimate. Every cleartext
+# allowance this rule can see, it reports; whether it's acceptable for a
+# given app is a decision for a human with product context, made
+# explicit and auditable through .mobilegate.yml's
+# suppress-with-mandatory-reason mechanism (spec's `ignore_rules`, not
+# yet implemented — build-order step 5, baseline mode) — not a judgment
+# this rule makes for them.

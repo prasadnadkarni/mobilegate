@@ -9,21 +9,30 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
-// RuleDef is a rule loaded from a /rules/*.yaml file.
+// RuleMeta is the metadata common to every rule, regardless of what kind
+// of detection drives it (pattern-matching for MG-001, structural checks
+// for MG-002). Embedded (inline) into each rule-specific def type rather
+// than duplicated.
+type RuleMeta struct {
+	ID          string `yaml:"id"`
+	Name        string `yaml:"name"`
+	Severity    string `yaml:"severity"`
+	Confidence  string `yaml:"confidence"`
+	Platform    string `yaml:"platform"`
+	Blocking    bool   `yaml:"blocking"`
+	MASVS       string `yaml:"masvs"`
+	CWE         string `yaml:"cwe"`
+	Description string `yaml:"description"`
+	Remediation string `yaml:"remediation"`
+}
+
+// RuleDef is a pattern-matching rule (MG-001) loaded from a
+// /rules/*.yaml file.
 type RuleDef struct {
-	ID          string          `yaml:"id"`
-	Name        string          `yaml:"name"`
-	Severity    string          `yaml:"severity"`
-	Confidence  string          `yaml:"confidence"`
-	Platform    string          `yaml:"platform"`
-	Blocking    bool            `yaml:"blocking"`
-	MASVS       string          `yaml:"masvs"`
-	CWE         string          `yaml:"cwe"`
-	Description string          `yaml:"description"`
-	Remediation string          `yaml:"remediation"`
-	Patterns    []PatternDef    `yaml:"patterns"`
-	Entropy     EntropyConfig   `yaml:"entropy"`
-	Exclusions  ExclusionConfig `yaml:"exclusions"`
+	RuleMeta   `yaml:",inline"`
+	Patterns   []PatternDef    `yaml:"patterns"`
+	Entropy    EntropyConfig   `yaml:"entropy"`
+	Exclusions ExclusionConfig `yaml:"exclusions"`
 }
 
 // PatternDef is one known-credential-format signal within a rule.

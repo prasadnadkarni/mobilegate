@@ -9,8 +9,9 @@ import (
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/dex"
 )
 
-// Finding is one MG-001 hit: a pattern match that survived every
-// exclusion check.
+// Finding is one confirmed hit from any rule this package evaluates —
+// originally just MG-001 (a pattern match that survived every exclusion
+// check), now also MG-002 (a structural transport-security signal).
 type Finding struct {
 	RuleID       string
 	PatternID    string
@@ -21,10 +22,17 @@ type Finding struct {
 	MASVS        string
 	CWE          string
 	Blocking     bool
-	Source       string // e.g. "classes.dex", "assets/config.json"
-	Location     string // e.g. "string_ids[1042]", "line 14"
+	Source       string // e.g. "classes.dex", "assets/config.json", "AndroidManifest.xml"
+	Location     string // e.g. "string_ids[1042]", "line 14", "domain-config[example.com]"
 	Excerpt      string // redacted matched value — enough to verify, not a second copy of the secret
 	SignalDetail string
+
+	// TargetSDK is the app's resolved targetSdkVersion, when relevant
+	// evidence for the finding (currently: MG-002 only — cleartext's
+	// platform default flips at API 28, so which side of that line an
+	// app targets is part of the evidence, not just metadata). Nil when
+	// not applicable or not determinable.
+	TargetSDK *int
 }
 
 type compiledPattern struct {

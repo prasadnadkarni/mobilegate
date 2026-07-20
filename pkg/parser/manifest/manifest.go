@@ -37,6 +37,16 @@ type Manifest struct {
 	UsesCleartextTraffic  Tristate
 	NetworkSecurityConfig string // resource path, e.g. "@xml/network_security_config", empty if unset
 	Components            []Component
+
+	// TargetSdkVersion is nil only if it cannot be determined at all
+	// (no <uses-sdk> element, or its attributes didn't resolve).
+	// Resolved the same way the Android platform itself does: an
+	// explicit android:targetSdkVersion, else android:minSdkVersion,
+	// else 1 — needed because MG-002 must distinguish an app that
+	// permits cleartext because it explicitly opted in from one that
+	// permits it only because it targets API < 28, where cleartext is
+	// the platform default with no explicit config at all.
+	TargetSdkVersion *int
 }
 
 // Component is one activity/service/receiver/provider entry.
@@ -92,6 +102,19 @@ func (v *optionalBool) UnmarshalXMLAttr(attr xml.Attr) error {
 	return v.Bool.UnmarshalXMLAttr(attr)
 }
 
+// optionalInt32 is optionalBool's counterpart for integer attributes —
+// same reasoning: androidbinary.Int32 alone can't distinguish "absent"
+// from "explicitly 0".
+type optionalInt32 struct {
+	androidbinary.Int32
+	set bool
+}
+
+func (v *optionalInt32) UnmarshalXMLAttr(attr xml.Attr) error {
+	v.set = true
+	return v.Int32.UnmarshalXMLAttr(attr)
+}
+
 type intentFilterXML struct{}
 
 type activityXML struct {
@@ -110,9 +133,15 @@ type applicationXML struct {
 	Providers             []activityXML        `xml:"provider"`
 }
 
+type usesSDKXML struct {
+	MinSdkVersion    optionalInt32 `xml:"http://schemas.android.com/apk/res/android minSdkVersion,attr"`
+	TargetSdkVersion optionalInt32 `xml:"http://schemas.android.com/apk/res/android targetSdkVersion,attr"`
+}
+
 type manifestXML struct {
 	Package androidbinary.String `xml:"package,attr"`
 	App     applicationXML       `xml:"application"`
+	UsesSDK usesSDKXML           `xml:"uses-sdk"`
 }
 
 // Parse extracts manifest fields from raw AndroidManifest.xml bytes.
@@ -144,6 +173,7 @@ func Parse(manifestBytes, resourcesArsc []byte) (*Manifest, error) {
 		PackageName:           mustString(raw.Package),
 		UsesCleartextTraffic:  tristateFrom(raw.App.UsesCleartextTraffic),
 		NetworkSecurityConfig: mustString(raw.App.NetworkSecurityConfig),
+		TargetSdkVersion:      resolveTargetSdk(raw.UsesSDK),
 	}
 
 	m.Components = append(m.Components, componentsFrom(KindActivity, raw.App.Activities)...)
@@ -166,6 +196,33 @@ func componentsFrom(kind ComponentKind, xs []activityXML) []Component {
 		})
 	}
 	return out
+}
+
+// resolveTargetSdk mirrors the Android platform's own fallback: an
+// explicit targetSdkVersion, else minSdkVersion, else 1 (the platform
+// default when neither is present — vanishingly rare in a real APK, but
+// this is what the OS itself does, so replicated for correctness rather
+// than assumed away).
+func resolveTargetSdk(sdk usesSDKXML) *int {
+	if v, ok := optionalInt32Value(sdk.TargetSdkVersion); ok {
+		return &v
+	}
+	if v, ok := optionalInt32Value(sdk.MinSdkVersion); ok {
+		return &v
+	}
+	one := 1
+	return &one
+}
+
+func optionalInt32Value(v optionalInt32) (int, bool) {
+	if !v.set {
+		return 0, false
+	}
+	n, err := v.Int32.Int32()
+	if err != nil {
+		return 0, false
+	}
+	return int(n), true
 }
 
 func mustString(s androidbinary.String) string {
