@@ -53,6 +53,14 @@ const (
 // itself, with no explicit opt-in anywhere in the app's own config.
 const minCleartextDefaultSDK = 28
 
+// minNSCHonoredSDK is the targetSdkVersion at and above which the
+// Android platform reads android:networkSecurityConfig at all (API 24 /
+// Android 7.0, when the Network Security Configuration feature shipped).
+// At or above this line, if the manifest references an NSC, the NSC is
+// authoritative for cleartext policy and android:usesCleartextTraffic is
+// not consulted by the platform — see CheckManifest.
+const minNSCHonoredSDK = 24
+
 // TransportScanner evaluates a loaded MG-002 rule against manifest and
 // network_security_config data. It does not evaluate a custom
 // TrustManager/HostnameVerifier accepting all certificates/hosts — see
@@ -81,7 +89,24 @@ func NewTransportScanner(rule *TransportRuleDef, firstPartyDomains []string) *Tr
 // because the attribute is absent and the app targets an SDK below the
 // platform's own default cutoff. Fires at most one finding — the two
 // signals are mutually exclusive by construction (Unset vs True).
-func (s *TransportScanner) CheckManifest(m *manifest.Manifest) []Finding {
+//
+// hasNetworkSecurityConfig must be true whenever
+// android:networkSecurityConfig is set at all (i.e.
+// manifest.Manifest.NetworkSecurityConfig != ""), regardless of whether
+// this tool could resolve or parse that referenced file — Android's own
+// precedence trigger is the attribute's presence, not this tool's
+// ability to read it. When true and targetSdkVersion >= 24 (the Android
+// 7.0 release that introduced Network Security Configuration), the NSC
+// is authoritative and the platform does not consult
+// android:usesCleartextTraffic at all — so neither manifest signal is
+// reported here; CheckNetworkSecurityConfig's own base-config/
+// domain-config signals carry the actual effective policy. Below API 24,
+// or with no NSC referenced, or with an unknown targetSdkVersion (never
+// guessed), the manifest flag is evaluated normally.
+func (s *TransportScanner) CheckManifest(m *manifest.Manifest, hasNetworkSecurityConfig bool) []Finding {
+	if hasNetworkSecurityConfig && m.TargetSdkVersion != nil && *m.TargetSdkVersion >= minNSCHonoredSDK {
+		return nil
+	}
 	switch m.UsesCleartextTraffic {
 	case manifest.True:
 		return []Finding{s.finding(SignalManifestExplicit,
@@ -106,6 +131,15 @@ func (s *TransportScanner) CheckManifest(m *manifest.Manifest) []Finding {
 // the resolved in-APK path (e.g. "res/8G.xml"), recorded as each
 // Finding's Source.
 func (s *TransportScanner) CheckNetworkSecurityConfig(sourcePath string, configs []nsc.Config, targetSDK *int) []Finding {
+	if targetSDK != nil && *targetSDK < minNSCHonoredSDK {
+		// The platform does not read network_security_config.xml at all
+		// below API 24 — nothing in it is actually honored, so nothing
+		// to report; the manifest flag is what governs in that case (see
+		// CheckManifest). targetSDK == nil is not guessed — still
+		// evaluated normally, the same "don't guess" reasoning as
+		// CheckManifest's mirror-image check.
+		return nil
+	}
 	var out []Finding
 	for _, c := range configs {
 		if c.CleartextPermitted != manifest.True {

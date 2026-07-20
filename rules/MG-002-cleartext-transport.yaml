@@ -92,6 +92,32 @@ remediation: >
 #      human reviewer via suppression-with-justification, not to a
 #      heuristic baked into the detector.
 #
+# Precedence: android:usesCleartextTraffic vs. network_security_config.
+# These are NOT two independent signals that both apply — on API 24+
+# (Android 7.0, when Network Security Configuration shipped), if the
+# manifest references an NSC at all, the platform does not consult
+# android:usesCleartextTraffic; the NSC alone determines the effective
+# policy. internal/engine.TransportScanner.CheckManifest therefore
+# returns nothing when an NSC is referenced and targetSdkVersion >= 24 —
+# signals 1 and 2 above are suppressed, and only the NSC-derived signals
+# (3 and 4) can fire for that app. Symmetrically,
+# CheckNetworkSecurityConfig returns nothing when targetSdkVersion < 24:
+# the platform never reads the NSC file at all below that line, so
+# nothing in it is actually honored either. An unknown targetSdkVersion
+# suppresses neither side (don't guess which one governs).
+#
+# This was a real bug, not a hypothetical: MG-002 corpus batch 1 (before
+# this fix) reported both manifest-explicit-cleartext and
+# network-security-config-base for the same 4 apps — noise, since only
+# the NSC signal is real. Worse, the case the corpus didn't happen to
+# contain — android:usesCleartextTraffic="true" with an NSC that
+# explicitly denies cleartext — would have been a false positive on a
+# correctly configured app: the manifest flag is inert there, the app
+# does not actually permit cleartext, and firing on it anyway is exactly
+# the failure mode this tool's whole precision bar exists to prevent.
+# Fixtures: TestMG002_ManifestNSCPrecedence
+# (internal/engine/mg002_fixtures_test.go).
+#
 # NOT implemented (v1 scope decision, same disposition as lib/*.so in
 # MG-001): a custom TrustManager/HostnameVerifier that accepts all
 # certificates/hosts. Spec lists this as MG-002's third signal, but
@@ -124,3 +150,38 @@ remediation: >
 # suppress-with-mandatory-reason mechanism (spec's `ignore_rules`, not
 # yet implemented — build-order step 5, baseline mode) — not a judgment
 # this rule makes for them.
+#
+# Disposition: blocking, deliberately, despite a 5/10 corpus hit rate.
+# Recorded here so this isn't relitigated off the corpus numbers alone
+# later, without this context.
+#
+# MG-002 corpus batch 1's network-security-config-base rate (5 of 10
+# apps: Fennec, Conversations, Nextcloud, AntennaPod, Material Files)
+# is a property of F-Droid's app population, not evidence that the rule
+# is too noisy for blocking status. Nextcloud, AntennaPod, Conversations,
+# and Material Files are all "user supplies the server" apps (self-hosted
+# sync, arbitrary podcast feeds, arbitrary XMPP hosts, arbitrary file
+# servers) — for that category, the destination domain literally isn't
+# known at build time, so a build-time cleartext denial is structurally
+# impossible, and an unconditional base-config allowance is the only way
+# the app can function at all for a self-hosted or non-HTTPS server.
+#
+# This tool's ICP (CLAUDE.md, spec) is regulated orgs shipping apps
+# against their own, known, first-party backends — banking, healthcare,
+# insurance, fintech. For that ICP, the app's own domains are known at
+# build time by definition, and an unconditional (or first-party-domain)
+# cleartext allowance is almost never a legitimate product requirement —
+# it is close to always either a debug leftover, a migration that never
+# got cleaned up, or a mistake. The corpus's 5/10 rate says "F-Droid
+# skews toward apps in a category this rule doesn't apply cleanly to,"
+# not "this rule is imprecise for the apps it's actually for."
+#
+# The mechanism for the F-Droid-shaped case (and for any regulated-org
+# app with a genuine, reviewed exception) is .mobilegate.yml's
+# suppress-with-mandatory-reason path, not a lower confidence tier or a
+# narrower detector: the finding is real and should be reported every
+# time cleartext is actually permitted; whether it's *acceptable* is a
+# product decision a human makes once, explicitly, on the record — not
+# something this rule should decide by pattern-matching the app's
+# apparent category, which would reopen exactly the unfalsifiable
+# legitimate-use heuristic ruled out two sections up.

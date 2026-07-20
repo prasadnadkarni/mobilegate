@@ -74,7 +74,7 @@ func TestMG002_PositiveFixtures_Manifest(t *testing.T) {
 	scanner := engine.NewTransportScanner(mg002TestRule(t), nil)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			findings := scanner.CheckManifest(tc.m)
+			findings := scanner.CheckManifest(tc.m, false) // no NSC referenced — precedence rule doesn't apply, see TestMG002_ManifestNSCPrecedence
 			if len(findings) != 1 {
 				t.Fatalf("got %d findings, want exactly 1: %+v", len(findings), findings)
 			}
@@ -160,7 +160,7 @@ func TestMG002_NegativeFixtures_Manifest(t *testing.T) {
 	scanner := engine.NewTransportScanner(mg002TestRule(t), nil)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			findings := scanner.CheckManifest(tc.m)
+			findings := scanner.CheckManifest(tc.m, false)
 			if len(findings) != 0 {
 				t.Errorf("got %d findings, want 0: %+v", len(findings), findings)
 			}
@@ -235,6 +235,108 @@ func TestMG002_NegativeFixtures_NetworkSecurityConfig(t *testing.T) {
 			findings := scanner.CheckNetworkSecurityConfig("res/nsc.xml", tc.configs, sdk(30))
 			if len(findings) != 0 {
 				t.Errorf("got %d findings, want 0: %+v", len(findings), findings)
+			}
+		})
+	}
+}
+
+// --- precedence: NSC supersedes the manifest flag on API 24+ ---
+//
+// android:usesCleartextTraffic is not consulted by the platform at all
+// once a network security config is present and honored (targetSdk 24+)
+// — the NSC alone determines the effective policy. Getting this wrong in
+// either direction is a real correctness bug, not a style nit: reporting
+// both signals for one effective condition (found in MG-002 corpus
+// batch 1 — 4 apps) is noise; missing the case the corpus didn't
+// surface — manifest says true, NSC actually denies cleartext, so the
+// app does NOT permit it — is a false positive on a correctly configured
+// app.
+func TestMG002_ManifestNSCPrecedence(t *testing.T) {
+	cases := []struct {
+		name        string
+		m           *manifest.Manifest
+		hasNSC      bool
+		nscConfigs  []nsc.Config
+		wantSignals []string // in the order CheckManifest then CheckNetworkSecurityConfig fire
+	}{
+		{
+			// The case the corpus lacked: manifest opts in, but the NSC
+			// that actually governs denies cleartext. Effective policy
+			// is "cleartext not permitted" — must be clean.
+			name:   "manifest_true_nsc_denies_must_be_clean",
+			m:      &manifest.Manifest{UsesCleartextTraffic: manifest.True, TargetSdkVersion: sdk(30), NetworkSecurityConfig: "res/nsc.xml"},
+			hasNSC: true,
+			nscConfigs: []nsc.Config{{
+				Kind: nsc.KindBaseConfig, CleartextPermitted: manifest.False,
+			}},
+			wantSignals: nil,
+		},
+		{
+			// The case explicitly asked for: manifest opts in AND the
+			// NSC permits — must report ONE finding (the NSC's), not two.
+			name:   "manifest_true_nsc_permits_one_finding_not_two",
+			m:      &manifest.Manifest{UsesCleartextTraffic: manifest.True, TargetSdkVersion: sdk(30), NetworkSecurityConfig: "res/nsc.xml"},
+			hasNSC: true,
+			nscConfigs: []nsc.Config{{
+				Kind: nsc.KindBaseConfig, CleartextPermitted: manifest.True,
+			}},
+			wantSignals: []string{engine.SignalNSCBaseConfig},
+		},
+		{
+			// Below API 24 the platform never reads the NSC file at all
+			// — precedence does not apply, and neither does the NSC's
+			// own content. Only the manifest flag governs.
+			name:   "target_sdk_below_24_nsc_not_honored_manifest_governs",
+			m:      &manifest.Manifest{UsesCleartextTraffic: manifest.True, TargetSdkVersion: sdk(23), NetworkSecurityConfig: "res/nsc.xml"},
+			hasNSC: true,
+			nscConfigs: []nsc.Config{{
+				Kind: nsc.KindBaseConfig, CleartextPermitted: manifest.True,
+			}},
+			wantSignals: []string{engine.SignalManifestExplicit},
+		},
+		{
+			// Unknown targetSdkVersion: neither side can confirm the
+			// other is authoritative, so neither is suppressed —
+			// consistent with this package's "don't guess" rule
+			// elsewhere (e.g. the implicit-low-target-sdk signal itself
+			// never fires on an unknown target SDK either).
+			name:   "unknown_target_sdk_neither_signal_suppressed",
+			m:      &manifest.Manifest{UsesCleartextTraffic: manifest.True, TargetSdkVersion: nil, NetworkSecurityConfig: "res/nsc.xml"},
+			hasNSC: true,
+			nscConfigs: []nsc.Config{{
+				Kind: nsc.KindBaseConfig, CleartextPermitted: manifest.True,
+			}},
+			wantSignals: []string{engine.SignalManifestExplicit, engine.SignalNSCBaseConfig},
+		},
+		{
+			// No NSC referenced at all: precedence question doesn't
+			// arise, manifest flag governs normally (regression check
+			// against the pre-precedence behavior).
+			name:        "no_nsc_referenced_manifest_governs_normally",
+			m:           &manifest.Manifest{UsesCleartextTraffic: manifest.True, TargetSdkVersion: sdk(30)},
+			hasNSC:      false,
+			nscConfigs:  nil,
+			wantSignals: []string{engine.SignalManifestExplicit},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			scanner := engine.NewTransportScanner(mg002TestRule(t), nil)
+			var got []string
+			for _, f := range scanner.CheckManifest(tc.m, tc.hasNSC) {
+				got = append(got, f.PatternID)
+			}
+			for _, f := range scanner.CheckNetworkSecurityConfig("res/nsc.xml", tc.nscConfigs, tc.m.TargetSdkVersion) {
+				got = append(got, f.PatternID)
+			}
+			if len(got) != len(tc.wantSignals) {
+				t.Fatalf("got signals %v, want %v", got, tc.wantSignals)
+			}
+			for i, sig := range tc.wantSignals {
+				if got[i] != sig {
+					t.Errorf("signal[%d] = %q, want %q (full: got=%v want=%v)", i, got[i], sig, got, tc.wantSignals)
+				}
 			}
 		})
 	}

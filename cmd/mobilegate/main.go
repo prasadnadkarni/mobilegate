@@ -148,7 +148,7 @@ func scanMG002(container *apk.Container, m *manifest.Manifest, firstPartyDomains
 	}
 	scanner := engine.NewTransportScanner(rule, firstPartyDomains)
 
-	findings := scanner.CheckManifest(m)
+	findings := scanner.CheckManifest(m, m.NetworkSecurityConfig != "")
 
 	if m.NetworkSecurityConfig == "" {
 		return findings, nil
