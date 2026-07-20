@@ -55,25 +55,37 @@ remediation: >
 # Signals (see CLAUDE.md multi-signal model). Three subtypes
 # (internal/engine's SignalAllowBackupExplicit /
 # SignalAllowBackupImplicitBlock / SignalAllowBackupImplicitWarn), not
-# two — an explicit opt-in and an implicit platform default both end in
-# the same effective exposure, but imply different developer intent and,
-# for the implicit case, different severity depending on target platform
-# version:
+# two — an explicit value and an implicit platform default both end in
+# the same effective exposure, but are reported distinctly because the
+# underlying manifest fact differs:
 #
 #   1. allow-backup-explicit: android:allowBackup="true" is present on
-#      <application>. A deliberate opt-in. Fires regardless of
-#      targetSdkVersion — this is not the platform default kicking in,
-#      it's a developer choosing it, so the API-31 adb-backup narrowing
-#      (see signal 3) doesn't soften this one: the developer asked for
-#      backup, and cloud/D2D backup still apply at any target SDK.
+#      <application>. This is NOT necessarily a deliberate opt-in —
+#      android:allowBackup="true" is the value Android Studio's own
+#      new-project manifest template ships, so an explicit true is, in
+#      practice, at least as often an untouched IDE default as it is a
+#      considered decision. The finding text does not claim otherwise.
+#      Fires, and blocks, at every targetSdkVersion: the API-31
+#      adb-backup narrowing (see signal 3) is a real platform behavior
+#      that does apply here too — cloud/device-to-device backup remains
+#      the residual risk at targetSdk >= 31, same as for the implicit
+#      case, and the finding TEXT says so (see
+#      internal/engine.explicitAllowBackupDetail, which selects wording
+#      by targetSdk the same way the implicit signals below do). What
+#      does NOT change with targetSdk is the *blocking* tier for this
+#      signal specifically: the underlying fact (the attribute is
+#      written down as true, in this build and every future one until
+#      someone edits the line) is more certain and more durable than an
+#      inherited platform default, which is the actual basis for treating
+#      it more strictly than signal 3 — not developer intent.
 #
 #   2. allow-backup-implicit-low-target-sdk: android:allowBackup is
 #      absent (defaults to true — unlike usesCleartextTraffic, this
 #      default has never changed across Android versions) AND
 #      targetSdkVersion < 31. Below API 31, `adb backup` extracts app
 #      data unconditionally for any backup-eligible app, debuggable or
-#      not — so an implicit, un-thought-about default is just as exposed
-#      as an explicit opt-in for these apps. Blocking.
+#      not — so an unconsidered default is just as exposed as an
+#      explicit true for these apps. Blocking.
 #
 #   3. allow-backup-implicit-narrowed-by-target-sdk:
 #      android:allowBackup is absent AND targetSdkVersion >= 31. From API
@@ -82,8 +94,20 @@ remediation: >
 #      local-extraction path for a non-debuggable release build on a
 #      modern target. Cloud backup and device-to-device transfer can
 #      still apply, so the exposure is narrowed, not eliminated: reported
-#      as a warning, not a block. See minADBBackupRestrictedSDK in
-#      internal/engine/storage.go.
+#      as a warning, not a block — this signal stacks two lower-certainty
+#      conditions (nothing was written down, AND the specific path that
+#      made the low-targetSdk case unconditionally blocking is closed),
+#      which is what actually justifies the lighter disposition, not any
+#      claim that the app "meant it" less than an explicit true would
+#      have. See minADBBackupRestrictedSDK in internal/engine/storage.go.
+#
+# Corpus note (12-app batch): every app in the corpus has an EXPLICIT
+# allowBackup value (true or false) — zero rely on the implicit default,
+# so signals 2 and 3 above are fixture-tested but currently unexercised
+# by this tool's real-world corpus. Consistent with the IDE-template
+# theory above: allowBackup is one of the first lines a template writes,
+# so "never touched" in practice usually still means "explicit," not
+# "absent."
 #
 # Override suppression (hasBackupOverride in internal/engine/storage.go):
 # if android:fullBackupContent references an XML resource (not the
@@ -102,6 +126,19 @@ remediation: >
 # insufficient — that residual risk is exactly the kind of judgment call
 # left to human review, not a heuristic this gate should attempt.
 #
+# Known gap, larger than originally assessed: 5 of 12 corpus apps (42%)
+# suppress via this path (KeePassDX, AntennaPod, Conversations, Dolphin,
+# VLC), all trusted without inspecting the referenced file's content.
+# Both fullBackupContent and dataExtractionRules files express their
+# include/exclude rules as element attributes (domain=/path=), not CDATA
+# text, so — unlike network_security_config.xml, which needed a custom
+# CDATA-aware tree walker (pkg/parser/nsc) — a parser for these could
+# likely reuse androidbinary's existing struct-tag XML decode, the same
+# way pkg/parser/manifest already does, with no new binary-XML-walking
+# code required. A structural (not content-inferring) signal worth
+# targeting first: an override file with zero <exclude> rules anywhere
+# restricts nothing and is not meaningfully different from no override at
+# all. Flagged for earlier reprioritization than v2, not yet built.
 # NOT implemented (v1 scope decision, same disposition as the bytecode
 # gaps documented in MG-001/MG-002's YAMLs):
 #   - MODE_WORLD_READABLE / MODE_WORLD_WRITEABLE at openFileOutput/

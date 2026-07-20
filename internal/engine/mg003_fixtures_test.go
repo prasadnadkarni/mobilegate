@@ -8,6 +8,7 @@
 package engine_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/prasadnadkarni/mobilegate/internal/engine"
@@ -36,27 +37,49 @@ cwe: CWE-530
 
 func TestMG003_PositiveFixtures(t *testing.T) {
 	cases := []struct {
-		name         string
-		m            *manifest.Manifest
-		wantSignal   string
-		wantBlocking bool
-		wantSeverity string
+		name            string
+		m               *manifest.Manifest
+		wantSignal      string
+		wantBlocking    bool
+		wantSeverity    string
+		wantDetailHas   string // substring the detail text must contain
+		wantDetailLacks string // substring the detail text must NOT contain
 	}{
 		{
-			name:         "explicit_allow_backup_true_high_target_sdk",
-			m:            &manifest.Manifest{AllowBackup: manifest.True, TargetSdkVersion: sdk(34)},
-			wantSignal:   engine.SignalAllowBackupExplicit,
-			wantBlocking: true,
-			wantSeverity: "high",
+			// Explicit true fires regardless of targetSdk (unlike the
+			// implicit signals) — see storage.go's signal-constants comment
+			// for why: the certainty/durability of the written attribute,
+			// not developer intent, is what keeps this blocking at every
+			// targetSdk. At high targetSdk, the detail text must name the
+			// residual (cloud/D2D) risk, not claim local adb extraction.
+			name:            "explicit_allow_backup_true_high_target_sdk",
+			m:               &manifest.Manifest{AllowBackup: manifest.True, TargetSdkVersion: sdk(34)},
+			wantSignal:      engine.SignalAllowBackupExplicit,
+			wantBlocking:    true,
+			wantSeverity:    "high",
+			wantDetailHas:   "cloud backup",
+			wantDetailLacks: "unconditionally",
 		},
 		{
-			// Explicit opt-in fires regardless of targetSdk — the API-31
-			// adb-backup narrowing doesn't soften a deliberate choice.
-			name:         "explicit_allow_backup_true_low_target_sdk",
-			m:            &manifest.Manifest{AllowBackup: manifest.True, TargetSdkVersion: sdk(23)},
-			wantSignal:   engine.SignalAllowBackupExplicit,
-			wantBlocking: true,
-			wantSeverity: "high",
+			// At low targetSdk the local adb-extraction path is still
+			// open, so the detail text must say so.
+			name:          "explicit_allow_backup_true_low_target_sdk",
+			m:             &manifest.Manifest{AllowBackup: manifest.True, TargetSdkVersion: sdk(23)},
+			wantSignal:    engine.SignalAllowBackupExplicit,
+			wantBlocking:  true,
+			wantSeverity:  "high",
+			wantDetailHas: "unconditionally below API 31",
+		},
+		{
+			// Unknown targetSdk: still fires (never suppressed on unknown
+			// data for the explicit signal), but must not assert either
+			// extraction path is definitely open or definitely closed.
+			name:          "explicit_allow_backup_true_unknown_target_sdk",
+			m:             &manifest.Manifest{AllowBackup: manifest.True, TargetSdkVersion: nil},
+			wantSignal:    engine.SignalAllowBackupExplicit,
+			wantBlocking:  true,
+			wantSeverity:  "high",
+			wantDetailHas: "could not be determined",
 		},
 		{
 			name:         "implicit_unset_low_target_sdk_blocking",
@@ -103,10 +126,39 @@ func TestMG003_PositiveFixtures(t *testing.T) {
 			if findings[0].Severity != tc.wantSeverity {
 				t.Errorf("Severity = %q, want %q", findings[0].Severity, tc.wantSeverity)
 			}
-			if findings[0].TargetSDK == nil || *findings[0].TargetSDK != *tc.m.TargetSdkVersion {
+			if tc.m.TargetSdkVersion == nil {
+				if findings[0].TargetSDK != nil {
+					t.Errorf("TargetSDK = %v, want nil", findings[0].TargetSDK)
+				}
+			} else if findings[0].TargetSDK == nil || *findings[0].TargetSDK != *tc.m.TargetSdkVersion {
 				t.Errorf("TargetSDK not recorded correctly: got %v, want %v", findings[0].TargetSDK, tc.m.TargetSdkVersion)
 			}
+			if tc.wantDetailHas != "" && !strings.Contains(findings[0].SignalDetail, tc.wantDetailHas) {
+				t.Errorf("SignalDetail = %q, want substring %q", findings[0].SignalDetail, tc.wantDetailHas)
+			}
+			if tc.wantDetailLacks != "" && strings.Contains(findings[0].SignalDetail, tc.wantDetailLacks) {
+				t.Errorf("SignalDetail = %q, must not contain %q", findings[0].SignalDetail, tc.wantDetailLacks)
+			}
 		})
+	}
+}
+
+// The explicit-true finding text must never claim the developer made a
+// deliberate choice: android:allowBackup="true" is Android Studio's own
+// new-project template default, so an explicit true is at least as often
+// an untouched IDE default as a considered decision.
+func TestMG003_ExplicitFindingDoesNotClaimDeliberateChoice(t *testing.T) {
+	scanner := engine.NewStorageScanner(mg003TestRule(t))
+	for _, sdkVal := range []*int{sdk(23), sdk(34), nil} {
+		findings := scanner.CheckManifest(&manifest.Manifest{AllowBackup: manifest.True, TargetSdkVersion: sdkVal})
+		if len(findings) != 1 {
+			t.Fatalf("targetSdk=%v: got %d findings, want 1", sdkVal, len(findings))
+		}
+		for _, banned := range []string{"deliberate", "opt-in", "opted in", "chose", "choice"} {
+			if strings.Contains(strings.ToLower(findings[0].SignalDetail), banned) {
+				t.Errorf("targetSdk=%v: SignalDetail contains %q, implies developer intent that isn't established: %q", sdkVal, banned, findings[0].SignalDetail)
+			}
+		}
 	}
 }
 

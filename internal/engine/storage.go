@@ -27,11 +27,34 @@ func LoadStorageRule(data []byte) (*StorageRuleDef, error) {
 	return &r, nil
 }
 
-// MG-003 signal subtypes. Three, not two: an explicit opt-in and an
-// implicit default both end in the same effective exposure, but at
-// different confidence-in-developer-intent and (for the implicit case)
-// different severity depending on platform version — see
-// minADBBackupRestrictedSDK.
+// MG-003 signal subtypes. Three, not two: an explicit value and an
+// implicit default both end in the same effective exposure, but are
+// reported distinctly because the underlying manifest fact differs.
+// This is NOT a claim about developer intent — android:allowBackup="true"
+// is the value Android Studio's own new-project manifest template ships,
+// so an explicit true is, in practice, at least as often an untouched IDE
+// default as it is a considered decision, which is exactly as
+// unconsidered as leaving the attribute unset. Neither signal's wording
+// should say or imply "the developer chose this."
+//
+// The API-31 adb-backup narrowing (minADBBackupRestrictedSDK) is a
+// platform property of the effective allowBackup=true state, orthogonal
+// to whether the attribute is explicit or implicit: it determines which
+// extraction paths (local adb vs. cloud/device-to-device only) are
+// actually open, and the same targetSdk-conditional wording logic
+// (explicitAllowBackupDetail below) applies to both.
+//
+// Blocking tier still differs by signal, but on a narrower basis than
+// intent: SignalAllowBackupExplicit blocks at every targetSdk, because
+// its underlying fact (the attribute IS true, unconditionally, in this
+// build and every future one until someone edits the line) is more
+// certain and more durable than an inherited platform default that
+// could shift with a future Android release. SignalAllowBackupImplicitWarn
+// downgrades specifically because it stacks two lower-certainty
+// conditions at once — nothing was written down, AND the specific local-
+// extraction path that made the low-targetSdk case unconditionally
+// blocking is closed — not because the app "didn't mean it" any less
+// than an explicit true would have.
 const (
 	SignalAllowBackupExplicit      = "allow-backup-explicit"
 	SignalAllowBackupImplicitBlock = "allow-backup-implicit-low-target-sdk"
@@ -81,7 +104,7 @@ func (s *StorageScanner) CheckManifest(m *manifest.Manifest) []Finding {
 		return []Finding{s.finding(SignalAllowBackupExplicit, s.rule.Severity, true,
 			"AndroidManifest.xml", "application",
 			`android:allowBackup="true"`,
-			"explicit android:allowBackup=\"true\" on <application>, with no fullBackupContent/dataExtractionRules override and no custom backupAgent — app data is fully backup-extractable",
+			explicitAllowBackupDetail(m.TargetSdkVersion),
 			m.TargetSdkVersion)}
 
 	case manifest.Unset:
@@ -103,6 +126,21 @@ func (s *StorageScanner) CheckManifest(m *manifest.Manifest) []Finding {
 			m.TargetSdkVersion)}
 	}
 	return nil
+}
+
+// explicitAllowBackupDetail builds SignalAllowBackupExplicit's evidence
+// text, selected by targetSDK the same way the implicit signals already
+// are — see the const block above for why this must not, in either
+// branch, describe android:allowBackup="true" as a deliberate choice.
+func explicitAllowBackupDetail(targetSDK *int) string {
+	switch {
+	case targetSDK == nil:
+		return `android:allowBackup="true" is set on <application>, with no fullBackupContent/dataExtractionRules override and no custom backupAgent. targetSdkVersion could not be determined, so it's unknown whether the API 31 adb-backup restriction (local extraction closed for non-debuggable builds) applies here — treat both local (adb backup/restore) and cloud/device-to-device backup as potential extraction paths`
+	case *targetSDK < minADBBackupRestrictedSDK:
+		return fmt.Sprintf(`android:allowBackup="true" is set on <application> (targetSdkVersion=%d, below %d), with no fullBackupContent/dataExtractionRules override and no custom backupAgent — app data is extractable via adb backup/restore, unconditionally below API %d, as well as via cloud backup and device-to-device transfer`, *targetSDK, minADBBackupRestrictedSDK, minADBBackupRestrictedSDK)
+	default:
+		return fmt.Sprintf(`android:allowBackup="true" is set on <application> (targetSdkVersion=%d, at or above %d), with no fullBackupContent/dataExtractionRules override and no custom backupAgent. Local extraction via adb backup is closed for a non-debuggable build at this targetSdk, but app data still replicates to the user's cloud backup account and via device-to-device transfer — the residual risk is off-device replication, not local USB/adb extraction`, *targetSDK, minADBBackupRestrictedSDK)
+	}
 }
 
 // hasBackupOverride reports whether the developer took any explicit
