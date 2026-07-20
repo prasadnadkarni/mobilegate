@@ -317,53 +317,52 @@ func printDebugJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings
 // table already asks for on the performance side. ruleVersion is also
 // what a baseline file records and compares against on load — see
 // core.LoadBaseline and runGate's staleness check.
+//
+// policy_mode's two string values are config.ModeStrict/ModeBaseline —
+// not redeclared here, so there's exactly one place that spells them.
 const (
 	scannerVersion = "0.1.0"
 	ruleVersion    = "2026.07.1"
-
-	// modeStrict/modeBaseline are policy_mode's two possible values —
-	// spec's own example shows "strict"; modeBaseline is this build's
-	// own baseline-mode addition, selected at runtime by whether -baseline
-	// was passed and loaded successfully (see runGate), not hardcoded.
-	modeStrict   = "strict"
-	modeBaseline = "baseline"
 )
 
 // contractReport is the spec's output contract: scanner_version,
 // rule_version, artifact_type, platform, gate_decision, policy_mode,
 // score, summary_counts, and findings buckets with structured evidence
-// arrays. baselined_findings/baseline_notice are this build's own
-// baseline-mode addition, not in the spec's original example — omitted
-// entirely (via omitempty) in strict mode, so a strict-mode JSON
-// document is byte-for-byte what the spec shows.
+// arrays. baselined_findings/baseline_notice/suppressed_findings are
+// this build's own additions, not in the spec's original example —
+// omitted entirely (via omitempty) when empty, so a plain strict-mode,
+// no-suppressions JSON document is byte-for-byte what the spec shows.
 type contractReport struct {
-	ScannerVersion    string                `json:"scanner_version"`
-	RuleVersion       string                `json:"rule_version"`
-	ArtifactType      string                `json:"artifact_type"`
-	Platform          string                `json:"platform"`
-	GateDecision      core.GateDecision     `json:"gate_decision"`
-	PolicyMode        string                `json:"policy_mode"`
-	Score             int                   `json:"score"`
-	SummaryCounts     contractSummaryCounts `json:"summary_counts"`
-	BlockingFindings  []contractFinding     `json:"blocking_findings"`
-	Warnings          []contractFinding     `json:"warnings"`
-	Info              []contractFinding     `json:"info"`
-	BaselinedFindings []contractFinding     `json:"baselined_findings,omitempty"`
-	BaselineNotice    string                `json:"baseline_notice,omitempty"`
+	ScannerVersion     string                `json:"scanner_version"`
+	RuleVersion        string                `json:"rule_version"`
+	ArtifactType       string                `json:"artifact_type"`
+	Platform           string                `json:"platform"`
+	GateDecision       core.GateDecision     `json:"gate_decision"`
+	PolicyMode         string                `json:"policy_mode"`
+	Score              int                   `json:"score"`
+	SummaryCounts      contractSummaryCounts `json:"summary_counts"`
+	BlockingFindings   []contractFinding     `json:"blocking_findings"`
+	Warnings           []contractFinding     `json:"warnings"`
+	Info               []contractFinding     `json:"info"`
+	BaselinedFindings  []contractFinding     `json:"baselined_findings,omitempty"`
+	BaselineNotice     string                `json:"baseline_notice,omitempty"`
+	SuppressedFindings []contractFinding     `json:"suppressed_findings,omitempty"`
 }
 
 type contractSummaryCounts struct {
-	Blocking  int `json:"blocking"`
-	Warning   int `json:"warning"`
-	Info      int `json:"info"`
-	Baselined int `json:"baselined,omitempty"`
+	Blocking   int `json:"blocking"`
+	Warning    int `json:"warning"`
+	Info       int `json:"info"`
+	Baselined  int `json:"baselined,omitempty"`
+	Suppressed int `json:"suppressed,omitempty"`
 }
 
-// contractFinding is one entry in blocking_findings/warnings/info.
-// "id" is the RULE's id (spec's own example: "id": "MG-001") — a
-// per-finding unique identifier is finding_hash, not this field.
-// Evidence reuses core.Evidence directly (already carries its own json
-// tags — see that type's doc comment) rather than a redundant DTO.
+// contractFinding is one entry in blocking_findings/warnings/info (and,
+// with SuppressedReason set, suppressed_findings). "id" is the RULE's
+// id (spec's own example: "id": "MG-001") — a per-finding unique
+// identifier is finding_hash, not this field. Evidence reuses
+// core.Evidence directly (already carries its own json tags — see that
+// type's doc comment) rather than a redundant DTO.
 type contractFinding struct {
 	ID          string          `json:"id"`
 	FindingHash string          `json:"finding_hash"`
@@ -375,6 +374,12 @@ type contractFinding struct {
 	Evidence    []core.Evidence `json:"evidence"`
 	WhyItBlocks string          `json:"why_it_blocks"`
 	Remediation string          `json:"remediation"`
+
+	// SuppressedReason is set only for entries in suppressed_findings —
+	// the reason a reviewed .mobilegate.yml ignore_rules entry gave for
+	// excluding this finding. Spec: "Report suppressed findings in the
+	// output as suppressed-with-reason, never silently dropped."
+	SuppressedReason string `json:"suppressed_reason,omitempty"`
 }
 
 func toContractFindings(findings []core.Finding) []contractFinding {
@@ -396,11 +401,22 @@ func toContractFindings(findings []core.Finding) []contractFinding {
 	return out
 }
 
+func toSuppressedContractFindings(suppressed []core.SuppressedFinding) []contractFinding {
+	out := make([]contractFinding, 0, len(suppressed))
+	for _, s := range suppressed {
+		cf := toContractFindings([]core.Finding{s.Finding})[0]
+		cf.SuppressedReason = s.Rule.Reason
+		out = append(out, cf)
+	}
+	return out
+}
+
 // printContractJSON emits the spec's machine-readable output contract.
-// mode is "strict" or "baseline" (see modeStrict/modeBaseline); baselined
-// is empty in strict mode, and baselineNotice is empty unless baseline
-// mode degraded (missing/corrupt file, stale rule_version).
-func printContractJSON(mode string, decision core.GateDecision, score int, blocking, warning, info, baselined []core.Finding, baselineNotice string) {
+// mode is config.ModeStrict or config.ModeBaseline; baselined is empty
+// in strict mode, and baselineNotice is empty unless baseline mode
+// degraded (missing/corrupt file, stale rule_version). suppressed is
+// whatever .mobilegate.yml's ignore_rules excluded, regardless of mode.
+func printContractJSON(mode string, decision core.GateDecision, score int, blocking, warning, info, baselined []core.Finding, suppressed []core.SuppressedFinding, baselineNotice string) {
 	rep := contractReport{
 		ScannerVersion: scannerVersion,
 		RuleVersion:    ruleVersion,
@@ -410,16 +426,18 @@ func printContractJSON(mode string, decision core.GateDecision, score int, block
 		PolicyMode:     mode,
 		Score:          score,
 		SummaryCounts: contractSummaryCounts{
-			Blocking:  len(blocking),
-			Warning:   len(warning),
-			Info:      len(info),
-			Baselined: len(baselined),
+			Blocking:   len(blocking),
+			Warning:    len(warning),
+			Info:       len(info),
+			Baselined:  len(baselined),
+			Suppressed: len(suppressed),
 		},
-		BlockingFindings:  toContractFindings(blocking),
-		Warnings:          toContractFindings(warning),
-		Info:              toContractFindings(info),
-		BaselinedFindings: toContractFindings(baselined),
-		BaselineNotice:    baselineNotice,
+		BlockingFindings:   toContractFindings(blocking),
+		Warnings:           toContractFindings(warning),
+		Info:               toContractFindings(info),
+		BaselinedFindings:  toContractFindings(baselined),
+		BaselineNotice:     baselineNotice,
+		SuppressedFindings: toSuppressedContractFindings(suppressed),
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -434,11 +452,15 @@ func printContractJSON(mode string, decision core.GateDecision, score int, block
 // with RELEASE STATUS: BLOCKED and the failed controls. Warnings
 // collapsed by default." Not read start-to-finish; a CI log viewer or a
 // developer glancing at a failed pipeline step needs the verdict in the
-// first line, not buried under a manifest dump. mode is "strict" or
-// "baseline"; baselined is the pre-existing debt a baseline grandfathered
-// (always empty in strict mode) — shown so nothing is silently hidden,
-// matching the baseline file's own "auditable, not opaque" requirement.
-func printGateReport(apkPath, mode string, decision core.GateDecision, score int, blocking, warning, info, baselined []core.Finding, showWarnings bool) {
+// first line, not buried under a manifest dump. mode is
+// config.ModeStrict or config.ModeBaseline; baselined is the
+// pre-existing debt a baseline grandfathered (always empty in strict
+// mode); suppressed is whatever .mobilegate.yml's ignore_rules excluded
+// (any mode). Both are always shown, never collapsed like warnings —
+// nothing here is silently hidden, matching the baseline file's own
+// "auditable, not opaque" requirement and spec's "suppressed-with-
+// reason, never silently dropped" for ignore_rules.
+func printGateReport(apkPath, mode string, decision core.GateDecision, score int, blocking, warning, info, baselined []core.Finding, suppressed []core.SuppressedFinding, showWarnings bool) {
 	status := "PASS"
 	if decision == core.GateBlocked {
 		status = "BLOCKED"
@@ -460,6 +482,12 @@ func printGateReport(apkPath, mode string, decision core.GateDecision, score int
 	if len(baselined) > 0 {
 		fmt.Printf("%d pre-existing finding(s) grandfathered by baseline (not blocking):\n", len(baselined))
 		printControls(baselined, "  ")
+		fmt.Println()
+	}
+
+	if len(suppressed) > 0 {
+		fmt.Printf("%d finding(s) suppressed by policy (.mobilegate.yml ignore_rules):\n", len(suppressed))
+		printSuppressed(suppressed, "  ")
 		fmt.Println()
 	}
 
@@ -503,9 +531,27 @@ func printControls(findings []core.Finding, indent string) {
 	}
 }
 
+// printSuppressed groups suppressed findings by rule and prints each
+// with the specific ignore_rules reason that suppressed it — spec:
+// "Report suppressed findings in the output as suppressed-with-reason,
+// never silently dropped."
+func printSuppressed(suppressed []core.SuppressedFinding, indent string) {
+	order, byRule := groupSuppressedByRule(suppressed)
+	for _, ruleID := range order {
+		items := byRule[ruleID]
+		fmt.Printf("%s%s — %s (%d finding%s)\n", indent, ruleID, items[0].Finding.RuleName, len(items), plural(len(items)))
+		for _, s := range items {
+			fmt.Printf("%s  [%s] %s\n", indent, s.Finding.Source, s.Finding.Excerpt)
+			fmt.Printf("%s    reason: %s\n", indent, s.Rule.Reason)
+			fmt.Printf("%s    finding_hash: %s\n", indent, s.Finding.FindingHash)
+		}
+	}
+}
+
 // groupByRule buckets findings by RuleID, preserving first-seen order
 // (deterministic given findings itself is produced in a fixed rule
-// evaluation order by main.go, not e.g. from map iteration).
+// evaluation order by main.go, not e.g. from map iteration). Shared by
+// the terminal and Markdown formatters (see markdown.go).
 func groupByRule(findings []core.Finding) (order []string, byRule map[string][]core.Finding) {
 	byRule = map[string][]core.Finding{}
 	for _, f := range findings {
@@ -513,6 +559,20 @@ func groupByRule(findings []core.Finding) (order []string, byRule map[string][]c
 			order = append(order, f.RuleID)
 		}
 		byRule[f.RuleID] = append(byRule[f.RuleID], f)
+	}
+	return order, byRule
+}
+
+// groupSuppressedByRule is groupByRule's counterpart for
+// []core.SuppressedFinding. Shared by the terminal and Markdown
+// formatters.
+func groupSuppressedByRule(suppressed []core.SuppressedFinding) (order []string, byRule map[string][]core.SuppressedFinding) {
+	byRule = map[string][]core.SuppressedFinding{}
+	for _, s := range suppressed {
+		if _, seen := byRule[s.Finding.RuleID]; !seen {
+			order = append(order, s.Finding.RuleID)
+		}
+		byRule[s.Finding.RuleID] = append(byRule[s.Finding.RuleID], s)
 	}
 	return order, byRule
 }

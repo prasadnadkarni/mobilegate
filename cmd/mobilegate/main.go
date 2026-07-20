@@ -8,14 +8,17 @@
 //
 // Two subcommands:
 //
-//	mobilegate [-baseline path] [-json] [-debug] [-warnings] [-config path] <apk>
+//	mobilegate [-mode strict|baseline] [-baseline path] [-json] [-debug] [-warnings] [-config path] <apk>
 //	mobilegate baseline -write [-baseline path] [-config path] <apk>
 //
-// Strict mode (default, no -baseline flag) blocks on any blocking-tier
-// finding. Baseline mode (-baseline path) blocks only on findings not
-// present in that file — see internal/core.SplitByBaseline. A missing
-// or corrupt baseline falls back to strict mode with a loud warning,
-// never a silent pass — spec: "fail closed."
+// Policy (mode, baseline file, first-party domains, rule suppression)
+// lives in .mobilegate.yml — a file a team reviews and commits — not in
+// whoever's CI invocation happens to pass which flags. -mode/-baseline
+// CLI flags override the file when explicitly passed (so CI can force
+// strict for one run regardless of what's committed); config wins
+// otherwise. A missing or invalid config, or a missing or corrupt
+// baseline, falls back to safe defaults (strict mode, no suppressions)
+// with a loud warning — never a silent pass. Spec: "fail closed."
 package main
 
 import (
@@ -36,9 +39,10 @@ import (
 )
 
 // defaultBaselinePath is where `mobilegate baseline -write` writes and
-// `mobilegate -baseline` (with no explicit path) looks, absent an
-// override — dot-prefixed to match .mobilegate.yml's convention, meant
-// to be committed to the project's repo.
+// where baseline mode looks, absent a policy.baseline_file in
+// .mobilegate.yml or a -baseline CLI override — dot-prefixed to match
+// .mobilegate.yml's convention, meant to be committed to the project's
+// repo.
 const defaultBaselinePath = ".mobilegate-baseline.yml"
 
 func main() {
@@ -49,15 +53,34 @@ func main() {
 	runGate(os.Args[1:])
 }
 
+// loadConfig loads .mobilegate.yml with the fail-closed fallback spec
+// asks for: a missing file is a legitimate default (config.LoadFile
+// itself returns an empty Config, no warning needed — see that
+// function's doc comment), but an invalid one (bad YAML, bad
+// policy.mode, an ignore_rules entry missing its reason) must not
+// silently proceed as if the file said nothing. The caller gets safe
+// defaults (strict mode, no suppressions, no first-party domains) plus
+// a non-empty notice to surface loudly, exactly like a corrupt baseline
+// file falls back rather than crashing outright.
+func loadConfig(path string) (*config.Config, string) {
+	cfg, err := config.LoadFile(path)
+	if err != nil {
+		return &config.Config{}, fmt.Sprintf("config file %s is invalid (%v) — falling back to default policy: strict mode, no rule suppressions, no first-party domains. Fix the file and re-run", path, err)
+	}
+	return cfg, ""
+}
+
 func runGate(args []string) {
 	fs := flag.NewFlagSet("mobilegate", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "emit the machine-readable JSON output contract instead of the human-readable gate report")
 	debug := fs.Bool("debug", false, "emit the full parser-state dump (manifest fields, DEX string samples) instead of the gate report — development/troubleshooting only, not the product output")
+	markdownOut := fs.Bool("markdown", false, "emit a GitHub/GitLab-flavored Markdown PR comment instead of the human-readable gate report")
 	showWarnings := fs.Bool("warnings", false, "show full warning-tier finding details in the terminal gate report (collapsed to a count by default)")
-	baselinePath := fs.String("baseline", "", "path to a baseline file (see 'mobilegate baseline -write'); if set, run in baseline mode — findings already present in the baseline don't block. Unset (default): strict mode, every blocking finding blocks")
-	configPath := fs.String("config", ".mobilegate.yml", "path to .mobilegate.yml (currently just policy.first_party_domains, used by MG-002); a missing file is not an error")
+	modeFlag := fs.String("mode", "", "override policy.mode from .mobilegate.yml: \"strict\" or \"baseline\". Unset (default): use the config file, defaulting to strict if it doesn't specify one — pass this explicitly to force a mode regardless of what's committed (e.g. CI forcing strict)")
+	baselinePath := fs.String("baseline", "", "override policy.baseline_file from .mobilegate.yml. Passing this alone (without -mode) also selects baseline mode, as a shorthand. Unset: use the config file's baseline_file, or this tool's own default path")
+	configPath := fs.String("config", ".mobilegate.yml", "path to .mobilegate.yml; a missing file is not an error, an invalid one falls back to safe defaults with a loud warning")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: mobilegate [-json] [-debug] [-warnings] [-baseline path] [-config path] <path-to-apk>")
+		fmt.Fprintln(os.Stderr, "usage: mobilegate [-mode strict|baseline] [-baseline path] [-json|-markdown] [-debug] [-warnings] [-config path] <path-to-apk>")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
@@ -68,7 +91,38 @@ func runGate(args []string) {
 	}
 	apkPath := fs.Arg(0)
 
-	res, err := scanAPK(apkPath, *configPath)
+	explicit := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+
+	cfg, configNotice := loadConfig(*configPath)
+	if configNotice != "" {
+		fmt.Fprintf(os.Stderr, "mobilegate: %s\n", configNotice)
+	}
+
+	mode := cfg.Policy.Mode
+	if mode == "" {
+		mode = config.ModeStrict
+	}
+	if explicit["baseline"] && !explicit["mode"] {
+		mode = config.ModeBaseline // shorthand: -baseline alone implies baseline mode
+	}
+	if explicit["mode"] {
+		mode = *modeFlag
+		if mode != config.ModeStrict && mode != config.ModeBaseline {
+			fmt.Fprintf(os.Stderr, "mobilegate: -mode must be %q or %q, got %q\n", config.ModeStrict, config.ModeBaseline, mode)
+			os.Exit(2)
+		}
+	}
+
+	baselineFile := cfg.Policy.BaselineFile
+	if baselineFile == "" {
+		baselineFile = defaultBaselinePath
+	}
+	if explicit["baseline"] {
+		baselineFile = *baselinePath
+	}
+
+	res, err := scanAPK(apkPath, cfg.Policy.FirstPartyDomains)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
 		os.Exit(1)
@@ -85,22 +139,24 @@ func runGate(args []string) {
 
 	allFindings := res.allFindings()
 
-	mode := modeStrict
+	allFindings, suppressed := core.SplitBySuppression(allFindings, suppressionRules(cfg.IgnoreRules))
+
 	var baselined []core.Finding
 	var baselineNotice string
-	if *baselinePath != "" {
-		b, loadErr := core.LoadBaseline(*baselinePath)
+	if mode == config.ModeBaseline {
+		b, loadErr := core.LoadBaseline(baselineFile)
 		switch {
 		case loadErr == nil:
-			mode = modeBaseline
 			if b.RuleVersion != ruleVersion {
-				baselineNotice = fmt.Sprintf("baseline %s was written with rule_version %s; this build is %s — findings may have shifted since the baseline was written; review the result before trusting a clean scan", *baselinePath, b.RuleVersion, ruleVersion)
+				baselineNotice = fmt.Sprintf("baseline %s was written with rule_version %s; this build is %s — findings may have shifted since the baseline was written; review the result before trusting a clean scan", baselineFile, b.RuleVersion, ruleVersion)
 			}
 			allFindings, baselined = core.SplitByBaseline(allFindings, b)
 		case os.IsNotExist(loadErr):
-			baselineNotice = fmt.Sprintf("no baseline file found at %s — running in STRICT mode (write one with: mobilegate baseline -write -baseline %s %s)", *baselinePath, *baselinePath, apkPath)
+			mode = config.ModeStrict
+			baselineNotice = fmt.Sprintf("no baseline file found at %s — running in STRICT mode (write one with: mobilegate baseline -write -baseline %s %s)", baselineFile, baselineFile, apkPath)
 		default:
-			baselineNotice = fmt.Sprintf("baseline file %s is corrupt or unreadable (%v) — falling back to STRICT mode; ALL existing findings are treated as new", *baselinePath, loadErr)
+			mode = config.ModeStrict
+			baselineNotice = fmt.Sprintf("baseline file %s is corrupt or unreadable (%v) — falling back to STRICT mode; ALL existing findings are treated as new", baselineFile, loadErr)
 		}
 	}
 
@@ -108,13 +164,19 @@ func runGate(args []string) {
 	score := core.Score(allFindings, decision)
 	blocking, warning, info := core.Buckets(allFindings)
 
-	if *jsonOut {
-		printContractJSON(mode, decision, score, blocking, warning, info, baselined, baselineNotice)
-	} else {
+	switch {
+	case *jsonOut:
+		printContractJSON(mode, decision, score, blocking, warning, info, baselined, suppressed, baselineNotice)
+	case *markdownOut:
 		if baselineNotice != "" {
 			fmt.Fprintf(os.Stderr, "mobilegate: %s\n", baselineNotice)
 		}
-		printGateReport(apkPath, mode, decision, score, blocking, warning, info, baselined, *showWarnings)
+		fmt.Print(markdownReport(apkPath, mode, decision, score, blocking, warning, info, baselined, suppressed))
+	default:
+		if baselineNotice != "" {
+			fmt.Fprintf(os.Stderr, "mobilegate: %s\n", baselineNotice)
+		}
+		printGateReport(apkPath, mode, decision, score, blocking, warning, info, baselined, suppressed, *showWarnings)
 	}
 
 	if decision == core.GateBlocked {
@@ -122,16 +184,32 @@ func runGate(args []string) {
 	}
 }
 
+// suppressionRules translates config.IgnoreRule (the YAML schema) into
+// core.SuppressionRule (the matching logic's own type) — kept as a
+// small conversion at this orchestration boundary rather than making
+// internal/core depend on internal/config, or vice versa.
+func suppressionRules(rules []config.IgnoreRule) []core.SuppressionRule {
+	out := make([]core.SuppressionRule, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, core.SuppressionRule{RuleID: r.ID, Reason: r.Reason, Paths: r.Paths})
+	}
+	return out
+}
+
 // runBaseline implements `mobilegate baseline -write <apk>`: runs the
 // same scan pipeline as the gate command, then writes a full snapshot
 // of its blocking-tier findings — replacing whatever baseline file was
 // there before, not merging with it, which is what makes the ratchet
 // property (a fixed finding drops out on the next write) hold with no
-// extra bookkeeping — see core.NewBaseline's doc comment.
+// extra bookkeeping — see core.NewBaseline's doc comment. Suppressed
+// findings (ignore_rules) are excluded before the snapshot, same as the
+// gate command: a policy-suppressed finding isn't debt to grandfather,
+// it's explicitly excluded, and should reappear immediately as a real
+// finding if the suppression is ever removed from the config.
 func runBaseline(args []string) {
 	fs := flag.NewFlagSet("mobilegate baseline", flag.ExitOnError)
 	write := fs.Bool("write", false, "write/replace the baseline file with the blocking findings from a fresh scan of the given APK (required — the only supported baseline operation right now)")
-	baselinePath := fs.String("baseline", defaultBaselinePath, "path to the baseline file to write")
+	baselinePath := fs.String("baseline", "", "override policy.baseline_file from .mobilegate.yml. Unset: use the config file's baseline_file, or this tool's own default path")
 	configPath := fs.String("config", ".mobilegate.yml", "path to .mobilegate.yml")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: mobilegate baseline -write [-baseline path] [-config path] <path-to-apk>")
@@ -150,18 +228,36 @@ func runBaseline(args []string) {
 	}
 	apkPath := fs.Arg(0)
 
-	res, err := scanAPK(apkPath, *configPath)
+	explicit := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+
+	cfg, configNotice := loadConfig(*configPath)
+	if configNotice != "" {
+		fmt.Fprintf(os.Stderr, "mobilegate: %s\n", configNotice)
+	}
+
+	baselineFile := cfg.Policy.BaselineFile
+	if baselineFile == "" {
+		baselineFile = defaultBaselinePath
+	}
+	if explicit["baseline"] {
+		baselineFile = *baselinePath
+	}
+
+	res, err := scanAPK(apkPath, cfg.Policy.FirstPartyDomains)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
 		os.Exit(1)
 	}
 
-	b := core.NewBaseline(scannerVersion, ruleVersion, res.allFindings())
-	if err := b.WriteFile(*baselinePath); err != nil {
+	allFindings, _ := core.SplitBySuppression(res.allFindings(), suppressionRules(cfg.IgnoreRules))
+
+	b := core.NewBaseline(scannerVersion, ruleVersion, allFindings)
+	if err := b.WriteFile(baselineFile); err != nil {
 		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("wrote baseline: %d blocking finding(s) captured to %s\n", len(b.Findings), *baselinePath)
+	fmt.Printf("wrote baseline: %d blocking finding(s) captured to %s\n", len(b.Findings), baselineFile)
 }
 
 // scanResult is the full parser + rule-evaluation output for one APK —
@@ -186,12 +282,7 @@ func (r *scanResult) allFindings() []core.Finding {
 	return out
 }
 
-func scanAPK(apkPath, configPath string) (*scanResult, error) {
-	cfg, err := config.LoadFile(configPath)
-	if err != nil {
-		return nil, err
-	}
-
+func scanAPK(apkPath string, firstPartyDomains []string) (*scanResult, error) {
 	container, err := apk.Open(apkPath)
 	if err != nil {
 		return nil, err
@@ -229,7 +320,7 @@ func scanAPK(apkPath, configPath string) (*scanResult, error) {
 		return nil, err
 	}
 
-	mg002Findings, err := scanMG002(container, m, cfg.Policy.FirstPartyDomains)
+	mg002Findings, err := scanMG002(container, m, firstPartyDomains)
 	if err != nil {
 		return nil, err
 	}

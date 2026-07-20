@@ -1,32 +1,57 @@
 // Package config loads .mobilegate.yml — MobileGate's own policy config
-// file (spec: "Config file (.mobilegate.yml)").
+// file (spec: "Config file (.mobilegate.yml)"). Policy belongs here, in
+// a file a team reviews and commits, not scattered across whoever's CI
+// invocation happens to pass which flags.
 //
-// This is a deliberately minimal slice of that file's eventual schema:
-// only policy.first_party_domains, the one field MG-002's
-// network_security_config signal structurally depends on ("First-party
-// domains come from the config file's allowlist, not from inferred
-// runtime behavior" — spec). policy.mode, new_findings_only, ignore_rules
-// (with mandatory justification), and score threshold overrides are ALL
-// deliberately not implemented here — those belong to baseline mode
-// (CLAUDE.md build order step 5) and are out of scope until then. Adding
-// this field now, rather than a bespoke one-off flag, is so the eventual
-// full schema doesn't have to replace a throwaway mechanism later.
+// Schema covered: policy.mode (strict/baseline), policy.baseline_file,
+// policy.first_party_domains (MG-002's domain allowlist — the original,
+// pre-baseline-mode field, now folded into the same loader rather than
+// living on its own), and ignore_rules (ruleset suppression with a
+// mandatory reason). policy.new_findings_only and a score threshold
+// override are NOT implemented — not asked for, and new_findings_only
+// in particular is redundant with what mode: baseline already does
+// unconditionally; adding a second knob for the same behavior would be
+// exactly the kind of not-in-scope config option CLAUDE.md's scope
+// discipline warns against.
 package config
 
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 )
 
-// Config is the (currently minimal) parsed contents of .mobilegate.yml.
+// Mode values for Policy.Mode.
+const (
+	ModeStrict   = "strict"
+	ModeBaseline = "baseline"
+)
+
+// Config is the parsed contents of .mobilegate.yml.
 type Config struct {
-	Policy Policy `yaml:"policy"`
+	Policy      Policy       `yaml:"policy"`
+	IgnoreRules []IgnoreRule `yaml:"ignore_rules"`
 }
 
-// Policy holds the policy.* keys this build-order step reads.
+// Policy holds the policy.* keys.
 type Policy struct {
+	// Mode is ModeStrict or ModeBaseline. Empty (unset) means strict —
+	// the safe default when a team hasn't adopted baseline mode yet. A
+	// CLI -mode flag always overrides this (see cmd/mobilegate), so CI
+	// can force strict regardless of what's committed here — policy
+	// lives in the reviewed file, but an operator can still tighten it
+	// for a specific run.
+	Mode string `yaml:"mode"`
+
+	// BaselineFile is where baseline mode looks for its baseline, when
+	// Mode is ModeBaseline. Empty means the caller's own default path
+	// (cmd/mobilegate's defaultBaselinePath) — this package doesn't
+	// hardcode that path, to keep it a pure schema/validation layer
+	// with no CLI-level knowledge.
+	BaselineFile string `yaml:"baseline_file"`
+
 	// FirstPartyDomains is the allowlist MG-002 checks a
 	// network_security_config <domain-config>'s <domain> entries
 	// against. Exact match or subdomain match (per that domain's own
@@ -34,11 +59,35 @@ type Policy struct {
 	FirstPartyDomains []string `yaml:"first_party_domains"`
 }
 
-// LoadFile reads and parses path. A missing file is not an error — it
-// returns an empty Config (no first-party domains), which is the correct
-// fail-closed behavior: with nothing configured, MG-002's
-// network_security_config domain-config signal simply has nothing to
-// match against and never fires, rather than guessing.
+// IgnoreRule is one policy-driven rule suppression — spec: "Rule
+// suppression with mandatory justification... Suppression without a
+// reason is a config validation error. This keeps the audit trail
+// honest." Reason is required; validate() (called from LoadFile)
+// rejects the whole config if any entry is missing one — not a warning,
+// not a skip-just-that-entry, a load failure, so a broken suppression
+// can't silently pass review along with everything else in the file.
+type IgnoreRule struct {
+	ID     string   `yaml:"id"`
+	Reason string   `yaml:"reason"`
+	Paths  []string `yaml:"paths"` // empty: suppresses ID everywhere; set: only findings whose Source is in this list
+}
+
+// LoadFile reads and parses path.
+//
+// A missing file is not an error — it returns an empty Config (strict
+// mode, no suppressions, no first-party domains), the correct default
+// when a team hasn't written one yet: with nothing configured, MG-002's
+// domain-config signal has nothing to match against and never fires,
+// and there is nothing to suppress or baseline against.
+//
+// A present-but-invalid file (malformed YAML, an unrecognized
+// policy.mode value, or an ignore_rules entry missing its reason) IS an
+// error — fail closed, same discipline as core.LoadBaseline: the caller
+// must not silently proceed as if the file said nothing. Unlike a
+// missing file (a legitimate default), an invalid one means the
+// author's actual intent is unknown, so this package refuses to guess
+// at it — see cmd/mobilegate for how the caller falls back (safe
+// defaults, loud warning) rather than crashing outright.
 func LoadFile(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -51,5 +100,25 @@ func LoadFile(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("config: parsing %s: %w", path, err)
 	}
+	if err := c.validate(); err != nil {
+		return nil, fmt.Errorf("config: %s: %w", path, err)
+	}
 	return &c, nil
+}
+
+func (c *Config) validate() error {
+	switch c.Policy.Mode {
+	case "", ModeStrict, ModeBaseline:
+	default:
+		return fmt.Errorf("policy.mode must be %q or %q (or unset, defaulting to %q), got %q", ModeStrict, ModeBaseline, ModeStrict, c.Policy.Mode)
+	}
+	for i, r := range c.IgnoreRules {
+		if strings.TrimSpace(r.ID) == "" {
+			return fmt.Errorf("ignore_rules[%d]: missing id", i)
+		}
+		if strings.TrimSpace(r.Reason) == "" {
+			return fmt.Errorf("ignore_rules[%d] (id %q): missing reason — suppressing a rule without a documented reason is not allowed", i, r.ID)
+		}
+	}
+	return nil
 }
