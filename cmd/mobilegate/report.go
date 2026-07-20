@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/prasadnadkarni/mobilegate/internal/core"
 	"github.com/prasadnadkarni/mobilegate/internal/engine"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/dex"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/manifest"
@@ -16,7 +17,13 @@ import (
 // with tens of thousands of strings.
 const maxSampleStrings = 15
 
-func printText(apkPath string, m *manifest.Manifest, results []dexFileResult, mg001Findings, mg002Findings, mg003Findings, mg010Findings []engine.Finding, surface scanSurfaceCounts) {
+// printDebugDump is the full parser-state dump used through build-order
+// steps 1-2, before there was a gate decision to report at all. Kept
+// behind -debug for development/troubleshooting: it shows manifest
+// fields and DEX string samples that have nothing to do with the actual
+// product output (spec: "Emits PASS or BLOCKED, not a findings report")
+// but are useful for verifying the parser against a new APK by eye.
+func printDebugDump(apkPath string, m *manifest.Manifest, results []dexFileResult, mg001Findings, mg002Findings, mg003Findings, mg010Findings []engine.Finding, surface scanSurfaceCounts) {
 	fmt.Printf("APK: %s\n\n", apkPath)
 
 	fmt.Println("== MG-001: Hardcoded production secret ==")
@@ -102,10 +109,15 @@ func printFindings(findings []engine.Finding) {
 		}
 		fmt.Printf("[%s] %s (%s)\n", blockLabel, f.Title, f.PatternID)
 		fmt.Printf("  source:     %s\n", f.Source)
-		fmt.Printf("  location:   %s\n", f.Location)
+		if f.Line != nil {
+			fmt.Printf("  line:       %d\n", *f.Line)
+		} else {
+			fmt.Printf("  location:   %s\n", f.Location)
+		}
 		fmt.Printf("  excerpt:    %s\n", f.Excerpt)
 		fmt.Printf("  confidence: %s   severity: %s   masvs: %s   cwe: %s\n", f.Confidence, f.Severity, f.MASVS, f.CWE)
 		fmt.Printf("  signal:     %s\n", f.SignalDetail)
+		fmt.Printf("  hash:       %s\n", f.FindingHash)
 		if f.TargetSDK != nil {
 			fmt.Printf("  targetSdkVersion: %d\n", *f.TargetSDK)
 		}
@@ -146,34 +158,34 @@ func truncate(s string, n int) string {
 
 // --- JSON dump (dev-only debug format, not the step-3 gate output contract) ---
 
-type jsonReport struct {
-	PackageName           string          `json:"package_name"`
-	UsesCleartextTraffic  string          `json:"uses_cleartext_traffic"`
-	NetworkSecurityConfig string          `json:"network_security_config"`
-	AllowBackup           string          `json:"allow_backup"`
-	Debuggable            string          `json:"debuggable"`
-	TestOnly              string          `json:"test_only"`
-	FullBackupContent     string          `json:"full_backup_content,omitempty"`
-	DataExtractionRules   string          `json:"data_extraction_rules,omitempty"`
-	BackupAgent           string          `json:"backup_agent,omitempty"`
-	TargetSdkVersion      *int            `json:"target_sdk_version,omitempty"`
-	Components            []jsonComponent `json:"components"`
-	Dex                   []jsonDexFile   `json:"dex"`
-	ScanSurface           jsonScanSurface `json:"scan_surface"`
-	MG001Findings         []jsonFinding   `json:"mg001_findings"`
-	MG002Findings         []jsonFinding   `json:"mg002_findings"`
-	MG003Findings         []jsonFinding   `json:"mg003_findings"`
-	MG010Findings         []jsonFinding   `json:"mg010_findings"`
+type debugJSONReport struct {
+	PackageName           string               `json:"package_name"`
+	UsesCleartextTraffic  string               `json:"uses_cleartext_traffic"`
+	NetworkSecurityConfig string               `json:"network_security_config"`
+	AllowBackup           string               `json:"allow_backup"`
+	Debuggable            string               `json:"debuggable"`
+	TestOnly              string               `json:"test_only"`
+	FullBackupContent     string               `json:"full_backup_content,omitempty"`
+	DataExtractionRules   string               `json:"data_extraction_rules,omitempty"`
+	BackupAgent           string               `json:"backup_agent,omitempty"`
+	TargetSdkVersion      *int                 `json:"target_sdk_version,omitempty"`
+	Components            []debugJSONComponent `json:"components"`
+	Dex                   []debugJSONDexFile   `json:"dex"`
+	ScanSurface           debugJSONScanSurface `json:"scan_surface"`
+	MG001Findings         []debugJSONFinding   `json:"mg001_findings"`
+	MG002Findings         []debugJSONFinding   `json:"mg002_findings"`
+	MG003Findings         []debugJSONFinding   `json:"mg003_findings"`
+	MG010Findings         []debugJSONFinding   `json:"mg010_findings"`
 }
 
-type jsonScanSurface struct {
+type debugJSONScanSurface struct {
 	DexStringsUnattributed int `json:"dex_strings_unattributed"`
 	ResourceStrings        int `json:"resource_strings"`
 	ManifestStrings        int `json:"manifest_strings"`
 	AssetFiles             int `json:"asset_files"`
 }
 
-type jsonFinding struct {
+type debugJSONFinding struct {
 	RuleID       string `json:"rule_id"`
 	PatternID    string `json:"pattern_id"`
 	Title        string `json:"title"`
@@ -189,7 +201,7 @@ type jsonFinding struct {
 	TargetSDK    *int   `json:"target_sdk_version,omitempty"`
 }
 
-type jsonComponent struct {
+type debugJSONComponent struct {
 	Kind            string `json:"kind"`
 	Name            string `json:"name"`
 	Exported        string `json:"exported"`
@@ -197,23 +209,23 @@ type jsonComponent struct {
 	HasIntentFilter bool   `json:"has_intent_filter"`
 }
 
-type jsonDexFile struct {
-	File        string          `json:"file"`
-	StringCount int             `json:"string_count"`
-	Strings     []jsonStringRef `json:"strings"`
+type debugJSONDexFile struct {
+	File        string               `json:"file"`
+	StringCount int                  `json:"string_count"`
+	Strings     []debugJSONStringRef `json:"strings"`
 }
 
-type jsonStringRef struct {
+type debugJSONStringRef struct {
 	Index     int    `json:"index"`
 	Value     string `json:"value"`
 	Usage     string `json:"usage"`
 	ClassType string `json:"class_type,omitempty"`
 }
 
-func toJSONFindings(findings []engine.Finding) []jsonFinding {
-	out := make([]jsonFinding, 0, len(findings))
+func toDebugJSONFindings(findings []engine.Finding) []debugJSONFinding {
+	out := make([]debugJSONFinding, 0, len(findings))
 	for _, f := range findings {
-		out = append(out, jsonFinding{
+		out = append(out, debugJSONFinding{
 			RuleID:       f.RuleID,
 			PatternID:    f.PatternID,
 			Title:        f.Title,
@@ -232,8 +244,8 @@ func toJSONFindings(findings []engine.Finding) []jsonFinding {
 	return out
 }
 
-func printJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings, mg002Findings, mg003Findings, mg010Findings []engine.Finding, surface scanSurfaceCounts) {
-	rep := jsonReport{
+func printDebugJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings, mg002Findings, mg003Findings, mg010Findings []engine.Finding, surface scanSurfaceCounts) {
+	rep := debugJSONReport{
 		PackageName:           m.PackageName,
 		UsesCleartextTraffic:  tristateLabel(m.UsesCleartextTraffic),
 		NetworkSecurityConfig: m.NetworkSecurityConfig,
@@ -244,19 +256,19 @@ func printJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings, mg0
 		DataExtractionRules:   m.DataExtractionRules,
 		BackupAgent:           m.BackupAgent,
 		TargetSdkVersion:      m.TargetSdkVersion,
-		ScanSurface: jsonScanSurface{
+		ScanSurface: debugJSONScanSurface{
 			DexStringsUnattributed: surface.dexStrings,
 			ResourceStrings:        surface.resourceStrings,
 			ManifestStrings:        surface.manifestStrings,
 			AssetFiles:             surface.assetFiles,
 		},
-		MG001Findings: toJSONFindings(mg001Findings),
-		MG002Findings: toJSONFindings(mg002Findings),
-		MG003Findings: toJSONFindings(mg003Findings),
-		MG010Findings: toJSONFindings(mg010Findings),
+		MG001Findings: toDebugJSONFindings(mg001Findings),
+		MG002Findings: toDebugJSONFindings(mg002Findings),
+		MG003Findings: toDebugJSONFindings(mg003Findings),
+		MG010Findings: toDebugJSONFindings(mg010Findings),
 	}
 	for _, c := range m.Components {
-		rep.Components = append(rep.Components, jsonComponent{
+		rep.Components = append(rep.Components, debugJSONComponent{
 			Kind:            string(c.Kind),
 			Name:            c.Name,
 			Exported:        tristateLabel(c.Exported),
@@ -265,9 +277,9 @@ func printJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings, mg0
 		})
 	}
 	for _, r := range results {
-		df := jsonDexFile{File: r.name, StringCount: len(r.strings)}
+		df := debugJSONDexFile{File: r.name, StringCount: len(r.strings)}
 		for _, s := range r.strings {
-			df.Strings = append(df.Strings, jsonStringRef{
+			df.Strings = append(df.Strings, debugJSONStringRef{
 				Index:     s.Index,
 				Value:     s.Value,
 				Usage:     s.Usage.String(),
@@ -281,8 +293,208 @@ func printJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings, mg0
 
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false) // this JSON is CI/log output, not embedded in HTML — escaping "<application>" to "\\u003capplication\\u003e" only hurts human readability and grep
 	if err := enc.Encode(rep); err != nil {
 		fmt.Fprintf(os.Stderr, "mobilegate: encode json: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// --- the actual product output: gate report (terminal) + contract JSON ---
+//
+// This is what build-order step 3 is actually for. Spec: "Emits PASS or
+// BLOCKED, not a findings report" / "MobSF says here are 150 findings.
+// This tool says your release is blocked because these 3 controls
+// failed." Everything above this line (printDebugDump, printDebugJSON)
+// is a development aid from earlier build-order steps, not part of the
+// product's real output — gated behind -debug for that reason.
+
+// scannerVersion/ruleVersion are this build's own identity, reported in
+// the JSON contract so a consumer can tell which detection logic
+// produced a given result. No real release-versioning process exists
+// yet (pre-1.0, single-developer build) — bump these by hand when rule
+// logic changes meaningfully, the same discipline PERFORMANCE.md's
+// table already asks for on the performance side.
+const (
+	scannerVersion = "0.1.0"
+	ruleVersion    = "2026.07.1"
+
+	// policyMode is hardcoded to "strict" because baseline mode (the
+	// only thing that would ever make it anything else) is a separate,
+	// not-yet-built mechanism — CLAUDE.md build order step 5. See
+	// core.Decide's doc comment.
+	policyMode = "strict"
+)
+
+// contractReport is the spec's output contract, verbatim: scanner_version,
+// rule_version, artifact_type, platform, gate_decision, policy_mode,
+// score, summary_counts, and three findings buckets with structured
+// evidence arrays.
+type contractReport struct {
+	ScannerVersion   string                `json:"scanner_version"`
+	RuleVersion      string                `json:"rule_version"`
+	ArtifactType     string                `json:"artifact_type"`
+	Platform         string                `json:"platform"`
+	GateDecision     core.GateDecision     `json:"gate_decision"`
+	PolicyMode       string                `json:"policy_mode"`
+	Score            int                   `json:"score"`
+	SummaryCounts    contractSummaryCounts `json:"summary_counts"`
+	BlockingFindings []contractFinding     `json:"blocking_findings"`
+	Warnings         []contractFinding     `json:"warnings"`
+	Info             []contractFinding     `json:"info"`
+}
+
+type contractSummaryCounts struct {
+	Blocking int `json:"blocking"`
+	Warning  int `json:"warning"`
+	Info     int `json:"info"`
+}
+
+// contractFinding is one entry in blocking_findings/warnings/info.
+// "id" is the RULE's id (spec's own example: "id": "MG-001") — a
+// per-finding unique identifier is finding_hash, not this field.
+// Evidence reuses core.Evidence directly (already carries its own json
+// tags — see that type's doc comment) rather than a redundant DTO.
+type contractFinding struct {
+	ID          string          `json:"id"`
+	FindingHash string          `json:"finding_hash"`
+	Title       string          `json:"title"`
+	Severity    string          `json:"severity"`
+	Confidence  string          `json:"confidence"`
+	MASVS       string          `json:"masvs"`
+	CWE         string          `json:"cwe"`
+	Evidence    []core.Evidence `json:"evidence"`
+	WhyItBlocks string          `json:"why_it_blocks"`
+	Remediation string          `json:"remediation"`
+}
+
+func toContractFindings(findings []core.Finding) []contractFinding {
+	out := make([]contractFinding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, contractFinding{
+			ID:          f.RuleID,
+			FindingHash: f.FindingHash,
+			Title:       f.Title,
+			Severity:    f.Severity,
+			Confidence:  f.Confidence,
+			MASVS:       f.MASVS,
+			CWE:         f.CWE,
+			Evidence:    f.EvidenceChain(),
+			WhyItBlocks: f.WhyItBlocks,
+			Remediation: f.Remediation,
+		})
+	}
+	return out
+}
+
+// printContractJSON emits the spec's machine-readable output contract.
+func printContractJSON(decision core.GateDecision, score int, blocking, warning, info []core.Finding) {
+	rep := contractReport{
+		ScannerVersion: scannerVersion,
+		RuleVersion:    ruleVersion,
+		ArtifactType:   "apk",
+		Platform:       "android",
+		GateDecision:   decision,
+		PolicyMode:     policyMode,
+		Score:          score,
+		SummaryCounts: contractSummaryCounts{
+			Blocking: len(blocking),
+			Warning:  len(warning),
+			Info:     len(info),
+		},
+		BlockingFindings: toContractFindings(blocking),
+		Warnings:         toContractFindings(warning),
+		Info:             toContractFindings(info),
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false) // this JSON is CI/log output, not embedded in HTML — escaping "<application>" to "\\u003capplication\\u003e" only hurts human readability and grep
+	if err := enc.Encode(rep); err != nil {
+		fmt.Fprintf(os.Stderr, "mobilegate: encode json: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// printGateReport is the default human-readable output — spec: "lead
+// with RELEASE STATUS: BLOCKED and the failed controls. Warnings
+// collapsed by default." Not read start-to-finish; a CI log viewer or a
+// developer glancing at a failed pipeline step needs the verdict in the
+// first line, not buried under a manifest dump.
+func printGateReport(apkPath string, decision core.GateDecision, score int, blocking, warning, info []core.Finding, showWarnings bool) {
+	status := "PASS"
+	if decision == core.GateBlocked {
+		status = "BLOCKED"
+	}
+	fmt.Printf("RELEASE STATUS: %s\n", status)
+	fmt.Printf("apk:   %s\n", apkPath)
+	fmt.Printf("score: %d/100 (secondary to the release status above — see internal/core.Score)\n", score)
+	fmt.Println()
+
+	if len(blocking) == 0 {
+		fmt.Println("No blocking findings.")
+	} else {
+		fmt.Println("Failed controls:")
+		printControls(blocking, "  ")
+	}
+	fmt.Println()
+
+	switch {
+	case len(warning) == 0:
+		fmt.Println("0 warnings.")
+	case showWarnings:
+		fmt.Printf("Warnings (%d):\n", len(warning))
+		printControls(warning, "  ")
+	default:
+		fmt.Printf("%d warning(s) not shown — rerun with -warnings to see details.\n", len(warning))
+	}
+
+	// info is always empty in this build (see core.Finding.Blocking's
+	// doc comment) — nothing to print, kept as a parameter for symmetry
+	// with the JSON contract and so this signature doesn't need to
+	// change when a real info-tier rule eventually exists.
+	_ = info
+}
+
+// printControls groups findings by rule (spec: "the specific controls
+// that failed" — a control is a rule, not an individual finding) and
+// prints each finding's evidence chain underneath its rule header.
+func printControls(findings []core.Finding, indent string) {
+	order, byRule := groupByRule(findings)
+	for _, ruleID := range order {
+		fs := byRule[ruleID]
+		fmt.Printf("%s%s — %s (%d finding%s)\n", indent, ruleID, fs[0].RuleName, len(fs), plural(len(fs)))
+		for _, f := range fs {
+			fmt.Printf("%s  [%s] %s\n", indent, f.Source, f.Excerpt)
+			if f.Line != nil {
+				fmt.Printf("%s    line: %d\n", indent, *f.Line)
+			} else if f.Location != "" {
+				fmt.Printf("%s    location: %s\n", indent, f.Location)
+			}
+			fmt.Printf("%s    why it blocks: %s\n", indent, f.WhyItBlocks)
+			fmt.Printf("%s    remediation:   %s\n", indent, f.Remediation)
+			fmt.Printf("%s    masvs: %s   cwe: %s   confidence: %s\n", indent, f.MASVS, f.CWE, f.Confidence)
+			fmt.Printf("%s    finding_hash: %s\n", indent, f.FindingHash)
+		}
+	}
+}
+
+// groupByRule buckets findings by RuleID, preserving first-seen order
+// (deterministic given findings itself is produced in a fixed rule
+// evaluation order by main.go, not e.g. from map iteration).
+func groupByRule(findings []core.Finding) (order []string, byRule map[string][]core.Finding) {
+	byRule = map[string][]core.Finding{}
+	for _, f := range findings {
+		if _, seen := byRule[f.RuleID]; !seen {
+			order = append(order, f.RuleID)
+		}
+		byRule[f.RuleID] = append(byRule[f.RuleID], f)
+	}
+	return order, byRule
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }

@@ -2,9 +2,11 @@ package engine
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 
+	"github.com/prasadnadkarni/mobilegate/internal/core"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/manifest"
 )
 
@@ -74,6 +76,7 @@ func (s *HygieneScanner) CheckManifest(m *manifest.Manifest) []Finding {
 func (s *HygieneScanner) finding(signal, source, location, excerpt, detail string) Finding {
 	return Finding{
 		RuleID:       s.rule.ID,
+		RuleName:     s.rule.Name,
 		PatternID:    signal,
 		Title:        fmt.Sprintf("Release build artifact hygiene failure (%s)", signal),
 		Severity:     s.rule.Severity,
@@ -85,5 +88,8 @@ func (s *HygieneScanner) finding(signal, source, location, excerpt, detail strin
 		Location:     location,
 		Excerpt:      excerpt,
 		SignalDetail: detail,
+		WhyItBlocks:  detail,
+		Remediation:  strings.TrimSpace(s.rule.Remediation),
+		FindingHash:  core.ComputeFindingHash(s.rule.ID, source, signal, excerpt),
 	}
 }

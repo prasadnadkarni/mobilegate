@@ -48,9 +48,10 @@ remediation: >
   android:fullBackupContent (legacy) or android:dataExtractionRules (API
   31+) XML resource that excludes sensitive files/shared-prefs keys, or
   supply a custom android:backupAgent that implements that exclusion in
-  code. This rule does not verify that a referenced scoping file or
-  custom agent is actually sufficient — see the override-suppression note
-  below for why.
+  code. This tool checks that a referenced scoping file actually
+  restricts something, but does not judge whether the specific
+  paths/domains excluded are the right ones for your app's data —
+  verify that yourself before relying on it.
 
 # Signals (see CLAUDE.md multi-signal model). Three subtypes
 # (internal/engine's SignalAllowBackupExplicit /

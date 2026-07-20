@@ -5,35 +5,18 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/prasadnadkarni/mobilegate/internal/core"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/arsc"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/dex"
 )
 
-// Finding is one confirmed hit from any rule this package evaluates —
-// originally just MG-001 (a pattern match that survived every exclusion
-// check), now also MG-002 (a structural transport-security signal).
-type Finding struct {
-	RuleID       string
-	PatternID    string
-	Title        string
-	Provider     string
-	Severity     string
-	Confidence   string
-	MASVS        string
-	CWE          string
-	Blocking     bool
-	Source       string // e.g. "classes.dex", "assets/config.json", "AndroidManifest.xml"
-	Location     string // e.g. "string_ids[1042]", "line 14", "domain-config[example.com]"
-	Excerpt      string // redacted matched value — enough to verify, not a second copy of the secret
-	SignalDetail string
-
-	// TargetSDK is the app's resolved targetSdkVersion, when relevant
-	// evidence for the finding (currently: MG-002 only — cleartext's
-	// platform default flips at API 28, so which side of that line an
-	// app targets is part of the evidence, not just metadata). Nil when
-	// not applicable or not determinable.
-	TargetSDK *int
-}
+// Finding is an alias for core.Finding — see internal/core's doc
+// comment for why the canonical finding model lives there (spec:
+// "internal/core — shared finding model, hashing, baseline diff,
+// scoring"). Aliased, not duplicated, so this package's four rule
+// scanners and their fixture tests don't need mechanical call-site
+// updates for the model to have moved.
+type Finding = core.Finding
 
 type compiledPattern struct {
 	def PatternDef
@@ -148,7 +131,7 @@ func (s *SecretScanner) ScanAsset(path string, data []byte) []Finding {
 				continue
 			}
 			line := 1 + strings.Count(content[:loc[0]], "\n")
-			out = append(out, s.newFinding(cp, matched, path, fmt.Sprintf("line %d", line)))
+			out = append(out, s.newFinding(cp, matched, path, "", &line))
 		}
 	}
 	return out
@@ -162,15 +145,26 @@ func (s *SecretScanner) scanValue(value, source, location string) []Finding {
 			if s.isExcludedValue(matched) {
 				continue
 			}
-			out = append(out, s.newFinding(cp, matched, source, location))
+			out = append(out, s.newFinding(cp, matched, source, location, nil))
 		}
 	}
 	return out
 }
 
-func (s *SecretScanner) newFinding(cp compiledPattern, matched, source, location string) Finding {
+// newFinding builds a Finding from a confirmed pattern match. line is
+// non-nil only from ScanAsset (a real text file has a real line
+// number); location carries the non-line descriptor (a string pool
+// index) everywhere else — see core.Finding's doc comment on why the
+// two are mutually exclusive.
+//
+// FindingHash is computed from the RAW matched value, never the
+// redacted Excerpt — see core.ComputeFindingHash's doc comment for why
+// hashing the display form risks silently merging two distinct leaked
+// credentials that happen to redact identically.
+func (s *SecretScanner) newFinding(cp compiledPattern, matched, source, location string, line *int) Finding {
 	return Finding{
 		RuleID:       s.rule.ID,
+		RuleName:     s.rule.Name,
 		PatternID:    cp.def.ID,
 		Title:        fmt.Sprintf("Hardcoded %s", cp.def.Name),
 		Provider:     cp.def.Provider,
@@ -181,8 +175,12 @@ func (s *SecretScanner) newFinding(cp compiledPattern, matched, source, location
 		Blocking:     s.rule.Blocking,
 		Source:       source,
 		Location:     location,
+		Line:         line,
 		Excerpt:      redact(matched),
 		SignalDetail: fmt.Sprintf("matched pattern %s (%s); outside exclusion zone", cp.def.ID, cp.def.Provider),
+		WhyItBlocks:  fmt.Sprintf("Anyone who downloads this APK can extract this %s from %s. If it is a live production credential, this is a direct path to unauthorized access to %s's systems.", cp.def.Name, source, cp.def.Provider),
+		Remediation:  strings.TrimSpace(s.rule.Remediation),
+		FindingHash:  core.ComputeFindingHash(s.rule.ID, source, cp.def.ID, matched),
 	}
 }
 

@@ -107,8 +107,40 @@ func TestScanAsset_MatchesInTextFile(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
 	}
-	if findings[0].Location != "line 2" {
-		t.Errorf("Location = %q, want %q", findings[0].Location, "line 2")
+	if findings[0].Line == nil || *findings[0].Line != 2 {
+		t.Errorf("Line = %v, want 2", findings[0].Line)
+	}
+	if findings[0].Location != "" {
+		t.Errorf("Location = %q, want empty (Line and Location are mutually exclusive)", findings[0].Location)
+	}
+}
+
+// This is the spec's literal finding_hash acceptance test: "a secret
+// that moves from line 14 to line 18 in the same file, with no other
+// change, must produce the same finding_hash." Same secret, same file,
+// pushed from line 2 to line 5 by inserting unrelated leading lines —
+// FindingHash must be identical even though Line is not.
+func TestScanAsset_FindingHashSurvivesLineShift(t *testing.T) {
+	s := newScanner(t)
+	before := []byte("line one\nkey=AKIATESTFAKEKEY12345\nline three")
+	after := []byte("line one\nline two (inserted)\nline three (inserted)\nline four (inserted)\nkey=AKIATESTFAKEKEY12345\nline six")
+
+	findingsBefore := s.ScanAsset("assets/config.txt", before)
+	findingsAfter := s.ScanAsset("assets/config.txt", after)
+	if len(findingsBefore) != 1 || len(findingsAfter) != 1 {
+		t.Fatalf("got %d/%d findings, want 1/1", len(findingsBefore), len(findingsAfter))
+	}
+
+	lineBefore, lineAfter := findingsBefore[0].Line, findingsAfter[0].Line
+	if lineBefore == nil || lineAfter == nil || *lineBefore == *lineAfter {
+		t.Fatalf("test setup bug: line numbers must actually differ (got %v vs %v)", lineBefore, lineAfter)
+	}
+	if findingsBefore[0].FindingHash != findingsAfter[0].FindingHash {
+		t.Errorf("FindingHash changed when only the line number moved: %q (line %d) vs %q (line %d)",
+			findingsBefore[0].FindingHash, *lineBefore, findingsAfter[0].FindingHash, *lineAfter)
+	}
+	if findingsBefore[0].FindingHash == "" {
+		t.Error("FindingHash is empty, want a real hash")
 	}
 }
 

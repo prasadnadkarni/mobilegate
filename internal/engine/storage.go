@@ -2,9 +2,11 @@ package engine
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 
+	"github.com/prasadnadkarni/mobilegate/internal/core"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/backuprules"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/manifest"
 )
@@ -227,9 +229,18 @@ func hasFreeBackupOverride(m *manifest.Manifest) bool {
 	return false
 }
 
+// finding builds a Finding for one of MG-003's three signals. severity/
+// blocking are per-call parameters, not always s.rule.Severity/
+// s.rule.Blocking, because this is the one rule with an internal
+// blocking/warning split (SignalAllowBackupImplicitWarn downgrades at
+// high targetSdk — see the signal-constants comment above). WhyItBlocks
+// reuses detail, same reasoning as transport.go's finding — these
+// signal texts are already targetSdk-accurate explanations, and a
+// second static narrative risks contradicting that precision.
 func (s *StorageScanner) finding(signal, severity string, blocking bool, source, location, excerpt, detail string, targetSDK *int) Finding {
 	return Finding{
 		RuleID:       s.rule.ID,
+		RuleName:     s.rule.Name,
 		PatternID:    signal,
 		Title:        fmt.Sprintf("App data backup-extractable (%s)", signal),
 		Severity:     severity,
@@ -241,6 +252,9 @@ func (s *StorageScanner) finding(signal, severity string, blocking bool, source,
 		Location:     location,
 		Excerpt:      excerpt,
 		SignalDetail: detail,
+		WhyItBlocks:  detail,
+		Remediation:  strings.TrimSpace(s.rule.Remediation),
 		TargetSDK:    targetSDK,
+		FindingHash:  core.ComputeFindingHash(s.rule.ID, source, signal, excerpt),
 	}
 }

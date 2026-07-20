@@ -6,6 +6,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 
+	"github.com/prasadnadkarni/mobilegate/internal/core"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/manifest"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/nsc"
 )
@@ -170,9 +171,18 @@ func (s *TransportScanner) CheckNetworkSecurityConfig(sourcePath string, configs
 	return out
 }
 
+// finding builds a Finding for one of MG-002's four signals.
+// WhyItBlocks reuses detail (SignalDetail) rather than a separate
+// narrative — see core.Finding.WhyItBlocks's doc comment for why: these
+// signal texts were already written to explain the consequence, not
+// just the detection mechanism, and inventing a second version risks
+// drifting out of sync with them. FindingHash folds signal into the
+// hash input alongside rule/source/match-value — see
+// core.ComputeFindingHash.
 func (s *TransportScanner) finding(signal, source, location, excerpt, detail string, targetSDK *int) Finding {
 	return Finding{
 		RuleID:       s.rule.ID,
+		RuleName:     s.rule.Name,
 		PatternID:    signal,
 		Title:        fmt.Sprintf("Cleartext traffic permitted (%s)", signal),
 		Severity:     s.rule.Severity,
@@ -184,7 +194,10 @@ func (s *TransportScanner) finding(signal, source, location, excerpt, detail str
 		Location:     location,
 		Excerpt:      excerpt,
 		SignalDetail: detail,
+		WhyItBlocks:  detail,
+		Remediation:  strings.TrimSpace(s.rule.Remediation),
 		TargetSDK:    targetSDK,
+		FindingHash:  core.ComputeFindingHash(s.rule.ID, source, signal, excerpt),
 	}
 }
 

@@ -1,11 +1,13 @@
 // Command mobilegate is the MobileGate CLI entrypoint.
 //
-// At this build-order step it exercises the parser (unzip, manifest, DEX
-// string extraction) and four rules: MG-001 (hardcoded secrets), MG-002
-// (cleartext transport), MG-003 (backup exposure), and MG-010 (debug/
-// test build artifact). There is no scoring or gate decision
-// (PASS/BLOCKED) yet — that's a later build-order step. Findings are
-// reported for review, not enforced.
+// It runs four rules — MG-001 (hardcoded secrets), MG-002 (cleartext
+// transport), MG-003 (backup exposure), MG-010 (debug/test build
+// artifact) — and emits the release gate's actual product output: a
+// PASS/BLOCKED decision, the failed controls, a secondary score, and
+// (with -json) the spec's machine-readable output contract. Baseline
+// mode (comparing against a stored baseline to block only on
+// regressions) is a later build-order step and not implemented here —
+// every blocking finding is currently evaluated as if in strict mode.
 package main
 
 import (
@@ -14,6 +16,7 @@ import (
 	"os"
 
 	"github.com/prasadnadkarni/mobilegate/internal/config"
+	"github.com/prasadnadkarni/mobilegate/internal/core"
 	"github.com/prasadnadkarni/mobilegate/internal/engine"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/apk"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/arsc"
@@ -25,12 +28,14 @@ import (
 )
 
 func main() {
-	jsonOut := flag.Bool("json", false, "emit machine-readable parser dump instead of the human-readable report")
+	jsonOut := flag.Bool("json", false, "emit the machine-readable JSON output contract instead of the human-readable gate report")
+	debug := flag.Bool("debug", false, "emit the full parser-state dump (manifest fields, DEX string samples) instead of the gate report — development/troubleshooting only, not the product output")
+	showWarnings := flag.Bool("warnings", false, "show full warning-tier finding details in the terminal gate report (collapsed to a count by default)")
 	configPath := flag.String("config", ".mobilegate.yml", "path to .mobilegate.yml (currently just policy.first_party_domains, used by MG-002); a missing file is not an error")
 	flag.Parse()
 
 	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: mobilegate [-json] [-config path] <path-to-apk>")
+		fmt.Fprintln(os.Stderr, "usage: mobilegate [-json] [-debug] [-warnings] [-config path] <path-to-apk>")
 		os.Exit(2)
 	}
 	apkPath := flag.Arg(0)
@@ -115,11 +120,34 @@ func main() {
 		assetFiles:      len(container.AssetFiles),
 	}
 
-	if *jsonOut {
-		printJSON(m, dexResults, mg001Findings, mg002Findings, mg003Findings, mg010Findings, scanSurface)
+	if *debug {
+		if *jsonOut {
+			printDebugJSON(m, dexResults, mg001Findings, mg002Findings, mg003Findings, mg010Findings, scanSurface)
+			return
+		}
+		printDebugDump(apkPath, m, dexResults, mg001Findings, mg002Findings, mg003Findings, mg010Findings, scanSurface)
 		return
 	}
-	printText(apkPath, m, dexResults, mg001Findings, mg002Findings, mg003Findings, mg010Findings, scanSurface)
+
+	var allFindings []core.Finding
+	allFindings = append(allFindings, mg001Findings...)
+	allFindings = append(allFindings, mg002Findings...)
+	allFindings = append(allFindings, mg003Findings...)
+	allFindings = append(allFindings, mg010Findings...)
+
+	decision := core.Decide(allFindings)
+	score := core.Score(allFindings, decision)
+	blocking, warning, info := core.Buckets(allFindings)
+
+	if *jsonOut {
+		printContractJSON(decision, score, blocking, warning, info)
+	} else {
+		printGateReport(apkPath, decision, score, blocking, warning, info, *showWarnings)
+	}
+
+	if decision == core.GateBlocked {
+		os.Exit(1)
+	}
 }
 
 // scanMG001 loads the embedded MG-001 rule and runs it against the
