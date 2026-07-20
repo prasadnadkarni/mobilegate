@@ -353,9 +353,15 @@ func TestMG001_PositiveFixtures(t *testing.T) {
 			"slack-token",
 		},
 		{
-			fixture{name: "private_key_header_in_asset",
+			// Must have an actual base64 key body, not just the header —
+			// see rules/MG-001-hardcoded-secret.yaml's comment on this
+			// pattern. 60 fake-but-base64-alphabet chars, well past the
+			// 40-char minimum.
+			fixture{name: "private_key_full_body_in_asset",
 				assets: map[string][]byte{
-					"assets/certs/fake.pem": []byte("-----BEGIN RSA PRIVATE KEY-----\nFAKEFAKEFAKE\n-----END RSA PRIVATE KEY-----"),
+					"assets/certs/fake.pem": []byte("-----BEGIN RSA PRIVATE KEY-----\n" +
+						padDigits("FAKEPRIVATEKEYBODYFORTESTINGPURPOSES", 60) +
+						"\n-----END RSA PRIVATE KEY-----"),
 				}},
 			"private-key-header",
 		},
@@ -449,6 +455,23 @@ func TestMG001_NegativeFixtures(t *testing.T) {
 				"com.example.app.MainActivity",
 				"com.example.app.SomeLibraryInitProvider",
 				"1.0.0",
+			},
+		},
+		{
+			name: "private_key_bare_header_no_body",
+			// The exact false positive MG-001 corpus batch 1 hit twice
+			// (Nextcloud, KeePassDX): a bundled PEM encoder/decoder
+			// library's own boundary-recognition constants, stored as
+			// bare marker strings with no key material — no
+			// base64 body ever follows them in the string pool. Must
+			// stay clean now that the pattern requires an actual body.
+			dexStrings: []string{
+				"-----BEGIN PRIVATE KEY-----",
+				"-----BEGIN PRIVATE KEY-----\n",
+				"-----BEGIN PUBLIC KEY-----",
+				"-----BEGIN RSA PRIVATE KEY-----",
+				"-----END PRIVATE KEY-----",
+				"-----END CERTIFICATE-----\n",
 			},
 		},
 	}

@@ -115,16 +115,33 @@ func (s *SecretScanner) ScanManifestStrings(strs []arsc.PoolString) []Finding {
 	return out
 }
 
-// ScanAsset scans one assets/ file's raw content, line by line, unless
-// its extension is in the rule's binary-asset exclusion zone — those are
-// never inspected at all, not matched-then-discarded.
+// ScanAsset scans one assets/ file's raw content, unless its extension is
+// in the rule's binary-asset exclusion zone — those are never inspected
+// at all, not matched-then-discarded.
+//
+// Scans the whole file as a single candidate, not line by line: a
+// multi-line credential block (e.g. a PEM key checked in as its own
+// .pem asset, header on one line and base64 body on the next) has to be
+// visible to the pattern as one unit, or a header-then-body pattern like
+// private-key-header can never match content whose header and body land
+// on different lines. Evidence still reports a line number, computed
+// from each match's byte offset after the fact, so this costs nothing
+// on the evidence side.
 func (s *SecretScanner) ScanAsset(path string, data []byte) []Finding {
 	if s.excludeExt[strings.ToLower(extOf(path))] {
 		return nil
 	}
+	content := string(data)
 	var out []Finding
-	for i, line := range strings.Split(string(data), "\n") {
-		out = append(out, s.scanValue(line, path, fmt.Sprintf("line %d", i+1))...)
+	for _, cp := range s.patterns {
+		for _, loc := range cp.re.FindAllStringIndex(content, -1) {
+			matched := content[loc[0]:loc[1]]
+			if s.isExcludedValue(matched) {
+				continue
+			}
+			line := 1 + strings.Count(content[:loc[0]], "\n")
+			out = append(out, s.newFinding(cp, matched, path, fmt.Sprintf("line %d", line)))
+		}
 	}
 	return out
 }
@@ -137,24 +154,28 @@ func (s *SecretScanner) scanValue(value, source, location string) []Finding {
 			if s.isExcludedValue(matched) {
 				continue
 			}
-			out = append(out, Finding{
-				RuleID:       s.rule.ID,
-				PatternID:    cp.def.ID,
-				Title:        fmt.Sprintf("Hardcoded %s", cp.def.Name),
-				Provider:     cp.def.Provider,
-				Severity:     s.rule.Severity,
-				Confidence:   cp.def.Confidence,
-				MASVS:        s.rule.MASVS,
-				CWE:          s.rule.CWE,
-				Blocking:     s.rule.Blocking,
-				Source:       source,
-				Location:     location,
-				Excerpt:      redact(matched),
-				SignalDetail: fmt.Sprintf("matched pattern %s (%s); outside exclusion zone", cp.def.ID, cp.def.Provider),
-			})
+			out = append(out, s.newFinding(cp, matched, source, location))
 		}
 	}
 	return out
+}
+
+func (s *SecretScanner) newFinding(cp compiledPattern, matched, source, location string) Finding {
+	return Finding{
+		RuleID:       s.rule.ID,
+		PatternID:    cp.def.ID,
+		Title:        fmt.Sprintf("Hardcoded %s", cp.def.Name),
+		Provider:     cp.def.Provider,
+		Severity:     s.rule.Severity,
+		Confidence:   cp.def.Confidence,
+		MASVS:        s.rule.MASVS,
+		CWE:          s.rule.CWE,
+		Blocking:     s.rule.Blocking,
+		Source:       source,
+		Location:     location,
+		Excerpt:      redact(matched),
+		SignalDetail: fmt.Sprintf("matched pattern %s (%s); outside exclusion zone", cp.def.ID, cp.def.Provider),
+	}
 }
 
 func (s *SecretScanner) isExcludedValue(v string) bool {
