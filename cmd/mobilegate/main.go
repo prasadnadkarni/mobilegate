@@ -10,9 +10,14 @@
 //
 // Three subcommands:
 //
-//	mobilegate [-mode strict|baseline] [-baseline path] [-json] [-sarif path] [-debug] [-warnings] [-config path] <apk>
+//	mobilegate [-mode strict|baseline] [-baseline path] [-json] [-sarif path] [-debug] [-warnings] [-config path] [-version] <apk>
 //	mobilegate baseline -write [-baseline path] [-config path] <apk>
 //	mobilegate version
+//
+// -version (a flag on the default subcommand) and the "version"
+// subcommand print the same thing: scanner_version + rule_version, and
+// whether this is an unversioned dev build (see printVersion in
+// report.go).
 //
 // Policy (mode, baseline file, first-party domains, rule suppression)
 // lives in .mobilegate.yml — a file a team reviews and commits — not in
@@ -61,7 +66,7 @@ func main() {
 			// before trusting anything it says. Deliberately plain text,
 			// not JSON: this is a quick human/shell smoke check, not
 			// another output contract to keep stable.
-			fmt.Printf("mobilegate %s (rules %s)\n", scannerVersion, ruleVersion)
+			printVersion()
 			return
 		}
 	}
@@ -95,11 +100,17 @@ func runGate(args []string) {
 	modeFlag := fs.String("mode", "", "override policy.mode from .mobilegate.yml: \"strict\" or \"baseline\". Unset (default): use the config file, defaulting to strict if it doesn't specify one — pass this explicitly to force a mode regardless of what's committed (e.g. CI forcing strict)")
 	baselinePath := fs.String("baseline", "", "override policy.baseline_file from .mobilegate.yml. Passing this alone (without -mode) also selects baseline mode, as a shorthand. Unset: use the config file's baseline_file, or this tool's own default path")
 	configPath := fs.String("config", ".mobilegate.yml", "path to .mobilegate.yml; a missing file is not an error, an invalid one falls back to safe defaults with a loud warning")
+	versionFlag := fs.Bool("version", false, "print version info and exit — same as the \"mobilegate version\" subcommand, provided as a flag too since that's the more commonly tried form")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: mobilegate [-mode strict|baseline] [-baseline path] [-json|-markdown] [-sarif path] [-debug] [-warnings] [-config path] <path-to-apk>")
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args) // flag.ExitOnError: Parse calls os.Exit(2) itself on error, never returns one to check
+
+	if *versionFlag {
+		printVersion()
+		return
+	}
 
 	if fs.NArg() != 1 {
 		fs.Usage()

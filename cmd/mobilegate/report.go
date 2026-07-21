@@ -333,14 +333,38 @@ func printDebugJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings
 // not redeclared here, so there's exactly one place that spells them.
 const ruleVersion = "2026.07.1"
 
-// scannerVersion defaults to a dev marker for a plain `go build` (make
-// build, local development), and is overridden by goreleaser's release
-// build via -ldflags "-X main.scannerVersion=vX.Y.Z" — see
+// scannerVersion defaults to devScannerVersion for a plain `go build` or
+// `go install` (no ldflags involved), and is overridden by goreleaser's
+// release build via -ldflags "-X main.scannerVersion=vX.Y.Z" — see
 // .goreleaser.yml. Must be a var, not a const: -X only works on
-// package-level string vars. `mobilegate version` prints this, so CI
-// (and a human) can confirm which binary a download actually is before
+// package-level string vars. `mobilegate version` / `mobilegate
+// -version` print this, so CI (and a human filing a bug report) can
+// confirm which binary a download or local build actually is before
 // trusting its output.
-var scannerVersion = "0.0.0-dev"
+var scannerVersion = devScannerVersion
+
+// devScannerVersion is scannerVersion's unset default — named so
+// printVersion can detect it by identity rather than repeating the
+// literal, which would silently drift out of sync if one copy ever
+// changed without the other.
+const devScannerVersion = "0.0.0-dev"
+
+// printVersion is shared by the `mobilegate version` subcommand and the
+// `-version` flag, so a bug report gets the same identity information
+// either way it's invoked. Flags a dev build explicitly rather than
+// just printing "0.0.0-dev" and leaving the reader to notice: a `go
+// install` build (this repo's README documents it as a supported way to
+// get the binary) never goes through goreleaser's -ldflags injection,
+// so scannerVersion silently stays at its zero value with nothing else
+// distinguishing it from a real, deliberately-unversioned release —
+// which it structurally cannot be, since goreleaser is what tags
+// releases at all.
+func printVersion() {
+	fmt.Printf("mobilegate %s (rules %s)\n", scannerVersion, ruleVersion)
+	if scannerVersion == devScannerVersion {
+		fmt.Println("DEV BUILD: no version was injected at build time (not built via goreleaser/a release binary) — scanner_version in this build's JSON/SARIF output will read the same unversioned default, not a real release tag. See the README's \"go install\" note.")
+	}
+}
 
 // contractReport is the spec's output contract: scanner_version,
 // rule_version, artifact_type, platform, gate_decision, policy_mode,

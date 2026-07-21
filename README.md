@@ -75,6 +75,18 @@ go build -o mobilegate ./cmd/mobilegate
 Requires Go 1.26+. No other runtime dependency — the built binary is
 static and self-contained.
 
+`go install github.com/prasadnadkarni/mobilegate/cmd/mobilegate@latest`
+also works (requires `$(go env GOPATH)/bin` on `PATH`), but the binary
+it produces has no version injected — `mobilegate -version` will show
+`0.0.0-dev` and say so explicitly, since `go install` doesn't run
+goreleaser's `-ldflags` step. That's fine for trying it out, but a
+`scanner_version` that doesn't correlate to anything is a real gap when
+correlating a bug report's JSON/SARIF output back to a specific build —
+for anything beyond a quick local try, prefer a
+[release binary](https://github.com/prasadnadkarni/mobilegate/releases)
+or the [GitHub Action](#github-action), both of which carry a real
+version.
+
 **Scan an APK:**
 
 ```sh
