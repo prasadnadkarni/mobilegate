@@ -22,6 +22,18 @@ Failed controls:
       remediation:   Set android:allowBackup="false" on <application> unless ...
 ```
 
+**Ships as a GitHub Action** — no build step, no Go toolchain on your
+runner, a pinned/checksum-verified release binary fetched at run time:
+
+```yaml
+- uses: prasadnadkarni/mobilegate@v0.1.0
+  with:
+    apk-path: app/build/outputs/apk/release/app-release-unsigned.apk
+```
+
+Full inputs, permissions, and the exit-code/PR-comment behavior are in
+[GitHub Action](#github-action) below.
+
 ## Why this isn't MobSF
 
 MobSF says "here are 150 findings." MobileGate says "your release is
@@ -473,6 +485,14 @@ goreleaser build --snapshot --clean   # verify cross-compilation locally without
 checks on every push and PR. `.github/workflows/release.yml` runs
 `goreleaser release` on a pushed `v*` tag — that's what publishes the
 binaries `action.yml` fetches; see `.goreleaser.yml`.
+
+**Pushing changes to `.github/workflows/*.yml` needs a token with the
+`workflow` OAuth scope.** A `gh auth login` session (or a PAT) without
+it gets rejected with `refusing to allow an OAuth App to create or
+update workflow ... without workflow scope` — not obvious the first
+time you hit it. Fix: `gh auth refresh -s workflow`. This bit the very
+first push of this project's own CI setup, so it'll bite you too if
+your token predates adding/editing a workflow file.
 
 See `CLAUDE.md` for the project's hard constraints (Go-only, no
 shelling out to JVM tooling, synthetic-fixtures-only, etc.) and
