@@ -63,7 +63,7 @@ func Open(path string) (*Container, error) {
 	}
 	c, err := read(&r.Reader)
 	if err != nil {
-		r.Close()
+		_ = r.Close() // best-effort cleanup on the error path; the read error above is what's returned
 		return nil, err
 	}
 	c.zr = r
@@ -93,7 +93,7 @@ func (c *Container) ReadFile(name string) (data []byte, found bool, err error) {
 	if !ok {
 		return nil, false, nil
 	}
-	var budget int64 // fresh per-call budget; this is an on-demand single-file fetch, not part of Open's eager-extraction total
+	var budget uint64 // fresh per-call budget; this is an on-demand single-file fetch, not part of Open's eager-extraction total
 	data, err = extract(f, &budget)
 	if err != nil {
 		return nil, true, err
@@ -103,7 +103,7 @@ func (c *Container) ReadFile(name string) (data []byte, found bool, err error) {
 
 func read(zr *zip.Reader) (*Container, error) {
 	c := &Container{files: make(map[string]*zip.File, len(zr.File))}
-	var totalRead int64
+	var totalRead uint64
 
 	var dexNames []string
 	dexData := map[string][]byte{}
@@ -154,20 +154,33 @@ func read(zr *zip.Reader) (*Container, error) {
 }
 
 // dexSortKey orders "classes.dex" before "classes2.dex" before "classes10.dex".
+// name is always pre-validated by classesDexPattern at the only call site
+// (dexNames is only ever populated with matches), so the Sscanf below can
+// never actually fail on the input it receives here.
 func dexSortKey(name string) int {
 	if name == "classes.dex" {
 		return 1
 	}
 	var n int
-	fmt.Sscanf(name, "classes%d.dex", &n)
+	_, _ = fmt.Sscanf(name, "classes%d.dex", &n)
 	return n
 }
 
-func extract(f *zip.File, totalRead *int64) ([]byte, error) {
-	if int64(f.UncompressedSize64) > MaxSingleEntryBytes {
+func extract(f *zip.File, totalRead *uint64) ([]byte, error) {
+	// f.UncompressedSize64 is attacker-controlled zip metadata and is kept
+	// in its native uint64 throughout both checks below (totalRead is
+	// uint64 for the same reason) rather than ever narrowed to int64: a
+	// value near uint64's max would wrap to a negative (or otherwise
+	// wrong) int64 and could defeat a naively-converted comparison. The
+	// budget check is subtraction-based rather than "*totalRead + size >
+	// max" specifically to avoid summing a trusted-but-bounded value with
+	// an untrusted, potentially-huge one — *totalRead never exceeds
+	// MaxUncompressedTotalBytes (that's this same check's own invariant),
+	// so the subtraction below can't underflow.
+	if f.UncompressedSize64 > uint64(MaxSingleEntryBytes) {
 		return nil, fmt.Errorf("entry %s exceeds max single-entry size (%d > %d)", f.Name, f.UncompressedSize64, MaxSingleEntryBytes)
 	}
-	if *totalRead+int64(f.UncompressedSize64) > MaxUncompressedTotalBytes {
+	if f.UncompressedSize64 > uint64(MaxUncompressedTotalBytes)-*totalRead {
 		return nil, fmt.Errorf("extracting %s would exceed total uncompressed budget (%d bytes)", f.Name, MaxUncompressedTotalBytes)
 	}
 
@@ -175,7 +188,10 @@ func extract(f *zip.File, totalRead *int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rc.Close()
+	// Close() here can't mask a checksum-mismatch bug: archive/zip surfaces
+	// ErrChecksum from Read() itself at EOF, not from Close() — verified
+	// against the stdlib source, not assumed.
+	defer func() { _ = rc.Close() }()
 
 	// LimitReader as a second guard: UncompressedSize64 is attacker-controlled
 	// zip metadata and is not guaranteed to match what actually inflates.
@@ -188,6 +204,6 @@ func extract(f *zip.File, totalRead *int64) ([]byte, error) {
 		return nil, fmt.Errorf("entry %s inflated past max single-entry size", f.Name)
 	}
 
-	*totalRead += int64(len(data))
+	*totalRead += uint64(len(data))
 	return data, nil
 }

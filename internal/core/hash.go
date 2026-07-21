@@ -52,6 +52,6 @@ func ComputeFindingHash(ruleID, filePath, patternID, normalizedMatchValue string
 // and ("A", "BC") never hash identically just because naive
 // concatenation would have made them the same byte string.
 func writeField(w io.Writer, s string) {
-	w.Write([]byte(s))
-	w.Write([]byte{0})
+	_, _ = w.Write([]byte(s)) // w is always a hash.Hash at the one call site; hash.Hash.Write never returns an error, per its documented contract
+	_, _ = w.Write([]byte{0})
 }

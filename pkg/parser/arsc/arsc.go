@@ -36,6 +36,7 @@ package arsc
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"unicode/utf16"
 )
 
@@ -83,6 +84,15 @@ func ExtractGlobalStringPool(data []byte) ([]PoolString, error) {
 	if len(data) < chunkHeaderSize {
 		return nil, fmt.Errorf("arsc: file too small to contain a container header (%d bytes)", len(data))
 	}
+	// This package's own chunk offsets/sizes are uint32 throughout (the
+	// binary format's own field width), so data itself must fit in a
+	// uint32 length before any len(data) is narrowed to compare against
+	// them below — real resources.arsc/manifest files are single- to
+	// low-double-digit MB; anything near the 4GB uint32 ceiling is
+	// already malformed input, not a realistic Android resource table.
+	if len(data) > math.MaxUint32 {
+		return nil, fmt.Errorf("arsc: file too large (%d bytes, max %d)", len(data), uint32(math.MaxUint32))
+	}
 
 	typ, headerSize, size, err := ReadChunkHeader(data, 0)
 	if err != nil {
@@ -92,8 +102,8 @@ func ExtractGlobalStringPool(data []byte) ([]PoolString, error) {
 		return nil, fmt.Errorf("arsc: not a resource table or binary XML document (chunk type 0x%04X, want 0x%04X or 0x%04X)", typ, resTableType, resXMLType)
 	}
 	tableEnd := size
-	if tableEnd > uint32(len(data)) {
-		tableEnd = uint32(len(data))
+	if tableEnd > uint32(len(data)) { // #nosec G115 -- len(data) <= math.MaxUint32, checked above
+		tableEnd = uint32(len(data)) // #nosec G115 -- same
 	}
 
 	// Scan top-level chunks for the first RES_STRING_POOL_TYPE. In every
@@ -201,7 +211,10 @@ func ParseStringPool(data []byte, poolOff, headerSize, chunkSize uint32) ([]Pool
 // (ignored) UTF-16 char count and the UTF-8 byte count in UTF-8 mode
 // strings: one byte normally, or two bytes (high bit of the first set)
 // combining 7+8 bits for lengths above 0x7F.
-func read8BitLength(data []byte, off uint64) (length int, next uint64, err error) {
+// length is returned as uint64, matching off/limit's type throughout this
+// file, so callers never need to convert an (unsigned-by-construction, but
+// int-typed) length back into uint64 before a bounds comparison.
+func read8BitLength(data []byte, off uint64) (length uint64, next uint64, err error) {
 	if off >= uint64(len(data)) {
 		return 0, off, fmt.Errorf("truncated length prefix at %d", off)
 	}
@@ -211,14 +224,14 @@ func read8BitLength(data []byte, off uint64) (length int, next uint64, err error
 			return 0, off, fmt.Errorf("truncated 2-byte length prefix at %d", off)
 		}
 		second := data[off+1]
-		return (int(first&0x7F) << 8) | int(second), off + 2, nil
+		return (uint64(first&0x7F) << 8) | uint64(second), off + 2, nil
 	}
-	return int(first), off + 1, nil
+	return uint64(first), off + 1, nil
 }
 
 // read16BitLength is the UTF-16 mode equivalent: one uint16 normally, or
 // two (high bit of the first set) combining 15+16 bits.
-func read16BitLength(data []byte, off uint64) (length int, next uint64, err error) {
+func read16BitLength(data []byte, off uint64) (length uint64, next uint64, err error) {
 	if off+2 > uint64(len(data)) {
 		return 0, off, fmt.Errorf("truncated length prefix at %d", off)
 	}
@@ -228,9 +241,9 @@ func read16BitLength(data []byte, off uint64) (length int, next uint64, err erro
 			return 0, off, fmt.Errorf("truncated 4-byte length prefix at %d", off)
 		}
 		second := binary.LittleEndian.Uint16(data[off+2:])
-		return (int(first&0x7FFF) << 16) | int(second), off + 4, nil
+		return (uint64(first&0x7FFF) << 16) | uint64(second), off + 4, nil
 	}
-	return int(first), off + 2, nil
+	return uint64(first), off + 2, nil
 }
 
 func readUTF8String(data []byte, off, limit uint64) (string, error) {
@@ -244,10 +257,10 @@ func readUTF8String(data []byte, off, limit uint64) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if off+uint64(byteLen) > limit {
+	if off+byteLen > limit {
 		return "", fmt.Errorf("string data (%d bytes at %d) extends past pool bounds", byteLen, off)
 	}
-	return string(data[off : off+uint64(byteLen)]), nil
+	return string(data[off : off+byteLen]), nil
 }
 
 func readUTF16String(data []byte, off, limit uint64) (string, error) {
@@ -255,13 +268,13 @@ func readUTF16String(data []byte, off, limit uint64) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	byteLen := uint64(charLen) * 2
+	byteLen := charLen * 2
 	if off+byteLen > limit {
 		return "", fmt.Errorf("string data (%d chars at %d) extends past pool bounds", charLen, off)
 	}
 	units := make([]uint16, charLen)
-	for i := 0; i < charLen; i++ {
-		units[i] = binary.LittleEndian.Uint16(data[off+uint64(i)*2:])
+	for i := uint64(0); i < charLen; i++ {
+		units[i] = binary.LittleEndian.Uint16(data[off+i*2:])
 	}
 	return string(utf16.Decode(units)), nil
 }

@@ -31,6 +31,7 @@ package nsc
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/arsc"
 	"github.com/prasadnadkarni/mobilegate/pkg/parser/manifest"
@@ -79,6 +80,12 @@ func Parse(data []byte) ([]Config, error) {
 	if len(data) < arsc.ChunkHeaderSize {
 		return nil, fmt.Errorf("nsc: file too small to contain a container header (%d bytes)", len(data))
 	}
+	// See arsc.ExtractGlobalStringPool's identical guard: chunk offsets
+	// are uint32, so data must fit in one before any len(data) narrowing
+	// below — a real network_security_config.xml is a few KB at most.
+	if len(data) > math.MaxUint32 {
+		return nil, fmt.Errorf("nsc: file too large (%d bytes, max %d)", len(data), uint32(math.MaxUint32))
+	}
 	typ, headerSize, size, err := arsc.ReadChunkHeader(data, 0)
 	if err != nil {
 		return nil, fmt.Errorf("nsc: %w", err)
@@ -87,8 +94,8 @@ func Parse(data []byte) ([]Config, error) {
 		return nil, fmt.Errorf("nsc: not a binary XML document (chunk type 0x%04X, want 0x%04X)", typ, arsc.ChunkTypeXML)
 	}
 	end := size
-	if end > uint32(len(data)) {
-		end = uint32(len(data))
+	if end > uint32(len(data)) { // #nosec G115 -- len(data) <= math.MaxUint32, checked above
+		end = uint32(len(data)) // #nosec G115 -- same
 	}
 
 	var pool []string

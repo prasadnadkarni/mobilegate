@@ -19,8 +19,6 @@ import (
 	"github.com/shogo82148/androidbinary"
 )
 
-const androidNS = "http://schemas.android.com/apk/res/android"
-
 // ComponentKind identifies which manifest element a Component came from.
 type ComponentKind string
 

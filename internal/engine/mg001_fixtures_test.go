@@ -194,20 +194,26 @@ func (f fixture) build(t *testing.T) *apk.Container {
 	// Always a real (if empty) binary-XML container, matching every real
 	// APK's manifest — scanFixture unconditionally scans it, the same
 	// way production always does, so it must actually parse.
-	w.Write(buildMinimalManifest(f.manifestStrings))
+	if _, err := w.Write(buildMinimalManifest(f.manifestStrings)); err != nil {
+		t.Fatal(err)
+	}
 
 	w, err = zw.Create("classes.dex")
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.Write(buildMinimalDex(t, f.dexStrings))
+	if _, err := w.Write(buildMinimalDex(t, f.dexStrings)); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(f.resourceStrings) > 0 {
 		w, err = zw.Create("resources.arsc")
 		if err != nil {
 			t.Fatal(err)
 		}
-		w.Write(buildMinimalArsc(f.resourceStrings))
+		if _, err := w.Write(buildMinimalArsc(f.resourceStrings)); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	for name, content := range f.assets {
@@ -215,7 +221,9 @@ func (f fixture) build(t *testing.T) *apk.Container {
 		if err != nil {
 			t.Fatal(err)
 		}
-		w.Write(content)
+		if _, err := w.Write(content); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	if err := zw.Close(); err != nil {
@@ -230,7 +238,7 @@ func (f fixture) build(t *testing.T) *apk.Container {
 	if err != nil {
 		t.Fatalf("apk.Open(%s): %v", f.name, err)
 	}
-	t.Cleanup(func() { container.Close() })
+	t.Cleanup(func() { _ = container.Close() }) // read-only zip container; nothing actionable on a close error
 	return container
 }
 

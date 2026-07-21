@@ -114,7 +114,7 @@ type IgnoreRule struct {
 // at it — see cmd/mobilegate for how the caller falls back (safe
 // defaults, loud warning) rather than crashing outright.
 func LoadFile(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is a local CLI flag/default (-config), chosen by the person running the binary, not remote/attacker-supplied input
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &Config{}, nil

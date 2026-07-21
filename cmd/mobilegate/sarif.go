@@ -168,10 +168,10 @@ func writeSarifFile(path string, log *sarif.Log) error {
 		return fmt.Errorf("SARIF output is %d bytes gzip-compressed, over GitHub's documented 10MB upload limit (%d bytes) — refusing to write a file the upload step would reject; this should never happen at MobileGate's normal finding volumes, so if it does, something upstream produced far more findings than expected", gz.Len(), sarifMaxCompressedBytes)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("creating directory for %s: %w", path, err)
 	}
-	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 	return nil

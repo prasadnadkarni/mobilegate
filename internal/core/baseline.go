@@ -113,7 +113,7 @@ func (b *Baseline) WriteFile(path string) error {
 		return fmt.Errorf("core: marshal baseline: %w", err)
 	}
 	out := append([]byte(baselineHeader), data...)
-	if err := os.WriteFile(path, out, 0o644); err != nil {
+	if err := os.WriteFile(path, out, 0o600); err != nil {
 		return fmt.Errorf("core: writing baseline %s: %w", path, err)
 	}
 	return nil
@@ -128,7 +128,7 @@ func (b *Baseline) WriteFile(path string) error {
 // not decide policy (falling back to strict mode and saying so loudly
 // is the caller's job — see cmd/mobilegate).
 func LoadBaseline(path string) (*Baseline, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is a local CLI flag/default (-baseline), chosen by the person running the binary, not remote/attacker-supplied input
 	if err != nil {
 		return nil, err
 	}

@@ -204,30 +204,35 @@ func ParseStrings(dexFileName string, data []byte) ([]StringRef, error) {
 // field of interest isn't the first 4 bytes aren't handled by this
 // helper — string_ids and type_ids both are). fieldByteOffset lets a
 // caller pick a field other than the first if needed; both current
-// callers use 0.
-func readUint32Table(data []byte, off, size uint32, entrySize, fieldByteOffset int, dexFileName, tableName string) ([]uint32, error) {
+// callers use 0. entrySize/fieldByteOffset are uint32, not int: every
+// call site passes a small compile-time constant (4 or 8; see
+// stringIDEntrySize etc.), never a value derived from parsed DEX data —
+// typing them uint32 here says so directly, rather than converting an
+// int at every arithmetic site below.
+func readUint32Table(data []byte, off, size, entrySize, fieldByteOffset uint32, dexFileName, tableName string) ([]uint32, error) {
 	end := uint64(off) + uint64(size)*uint64(entrySize)
 	if size > 0 && (off == 0 || end > uint64(len(data))) {
 		return nil, fmt.Errorf("dex: %s: %s table out of bounds (off=%d size=%d entrySize=%d filelen=%d)", dexFileName, tableName, off, size, entrySize, len(data))
 	}
 	out := make([]uint32, size)
 	for i := uint32(0); i < size; i++ {
-		recOff := off + i*uint32(entrySize) + uint32(fieldByteOffset)
+		recOff := off + i*entrySize + fieldByteOffset
 		out[i] = binary.LittleEndian.Uint32(data[recOff : recOff+4])
 	}
 	return out, nil
 }
 
 // attributeMembers walks a fixed-size id table (method_ids or field_ids)
-// and invokes fn with each raw entry's bytes.
-func attributeMembers(data []byte, off, size uint32, entrySize int, dexFileName, tableName string, fn func(rec []byte) error) error {
+// and invokes fn with each raw entry's bytes. entrySize is uint32 for the
+// same reason as readUint32Table's above.
+func attributeMembers(data []byte, off, size, entrySize uint32, dexFileName, tableName string, fn func(rec []byte) error) error {
 	end := uint64(off) + uint64(size)*uint64(entrySize)
 	if size > 0 && (off == 0 || end > uint64(len(data))) {
 		return fmt.Errorf("%s table out of bounds (off=%d size=%d entrySize=%d filelen=%d)", tableName, off, size, entrySize, len(data))
 	}
 	for i := uint32(0); i < size; i++ {
-		recOff := off + i*uint32(entrySize)
-		if err := fn(data[recOff : recOff+uint32(entrySize)]); err != nil {
+		recOff := off + i*entrySize
+		if err := fn(data[recOff : recOff+entrySize]); err != nil {
 			return fmt.Errorf("%s[%d]: %w", tableName, i, err)
 		}
 	}
@@ -303,16 +308,21 @@ func decodeMUTF8(b []byte) (string, error) {
 			units = append(units, uint16(b0))
 			i++
 		case b0&0xE0 == 0xC0:
-			if i+1 >= len(b) || b[i+1]&0xC0 != 0x80 {
+			// gosec G602 false-positives on all three b[i+1]/b[i+2]
+			// accesses below: each is only reached after its own
+			// preceding "i+N >= len(b)" check short-circuits false (Go
+			// evaluates || left-to-right and stops at the first true
+			// operand), which already proves the index is in bounds.
+			if i+1 >= len(b) || b[i+1]&0xC0 != 0x80 { // #nosec G602
 				return "", fmt.Errorf("invalid MUTF-8 2-byte sequence at %d", i)
 			}
-			units = append(units, uint16(b0&0x1F)<<6|uint16(b[i+1]&0x3F))
+			units = append(units, uint16(b0&0x1F)<<6|uint16(b[i+1]&0x3F)) // #nosec G602
 			i += 2
 		case b0&0xF0 == 0xE0:
-			if i+2 >= len(b) || b[i+1]&0xC0 != 0x80 || b[i+2]&0xC0 != 0x80 {
+			if i+2 >= len(b) || b[i+1]&0xC0 != 0x80 || b[i+2]&0xC0 != 0x80 { // #nosec G602
 				return "", fmt.Errorf("invalid MUTF-8 3-byte sequence at %d", i)
 			}
-			units = append(units, uint16(b0&0x0F)<<12|uint16(b[i+1]&0x3F)<<6|uint16(b[i+2]&0x3F))
+			units = append(units, uint16(b0&0x0F)<<12|uint16(b[i+1]&0x3F)<<6|uint16(b[i+2]&0x3F)) // #nosec G602
 			i += 3
 		default:
 			return "", fmt.Errorf("invalid MUTF-8 lead byte 0x%02X at %d", b0, i)

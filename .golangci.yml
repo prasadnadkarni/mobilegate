@@ -1,0 +1,20 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gosec
+  exclusions:
+    rules:
+      # Test fixtures construct synthetic binary data from small,
+      # compile-time-controlled values (never parsed/untrusted input) —
+      # gosec's integer-overflow and file-permission checks exist for
+      # code handling adversarial input, which test-fixture-building
+      # code by definition isn't.
+      - path: _test\.go
+        linters:
+          - gosec

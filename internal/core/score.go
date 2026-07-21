@@ -14,16 +14,6 @@ const (
 	weightBlocking = 25 // per blocking-tier finding
 	weightWarning  = 8  // per warning-tier finding
 
-	// weightInfo is reserved for a future info-tier rule (MG-009+, not
-	// implemented in this build — see Finding.Blocking's doc comment).
-	// Currently inert: Score never has an info-tier finding to apply it
-	// to, since Buckets' info return is always empty. Kept defined and
-	// documented rather than omitted, so wiring in the first real
-	// info-tier rule doesn't also require reinventing this constant —
-	// same pattern as MG-001 YAML's entropy.min_length, defined ahead of
-	// the pattern that will use it.
-	weightInfo = 2
-
 	// blockedScoreCeiling is the highest score a BLOCKED build may ever
 	// display, regardless of how few or low-severity its blocking
 	// findings were. Spec: "Floor the score low enough that a BLOCKED

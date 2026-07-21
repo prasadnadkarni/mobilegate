@@ -48,6 +48,29 @@ jobs:
       - name: go test
         run: go test ./...
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Pinned to an exact golangci-lint version — not "latest" — so a
+      # new linter release enabling stricter checks by default can't turn
+      # CI red on unchanged code. Bumping this is a deliberate, visible
+      # diff, same discipline as the rule-severity weights in
+      # internal/core/score.go. Linter set is conservative and pinned in
+      # .golangci.yml: golangci-lint's own default five (errcheck, govet,
+      # ineffassign, staticcheck, unused) plus gosec — this is a security
+      # tool parsing untrusted, attacker-controlled APK content, so
+      # integer-overflow/bounds/file-permission checks earn their keep
+      # here more than in a typical Go project.
+      - uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.12.2
+
   goreleaser-check:
     runs-on: ubuntu-latest
     steps:

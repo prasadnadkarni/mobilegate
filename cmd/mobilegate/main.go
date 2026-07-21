@@ -99,7 +99,7 @@ func runGate(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: mobilegate [-mode strict|baseline] [-baseline path] [-json|-markdown] [-sarif path] [-debug] [-warnings] [-config path] <path-to-apk>")
 		fs.PrintDefaults()
 	}
-	fs.Parse(args)
+	_ = fs.Parse(args) // flag.ExitOnError: Parse calls os.Exit(2) itself on error, never returns one to check
 
 	if fs.NArg() != 1 {
 		fs.Usage()
@@ -254,7 +254,7 @@ func runBaseline(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: mobilegate baseline -write [-baseline path] [-config path] <path-to-apk>")
 		fs.PrintDefaults()
 	}
-	fs.Parse(args)
+	_ = fs.Parse(args) // flag.ExitOnError: Parse calls os.Exit(2) itself on error, never returns one to check
 
 	if !*write {
 		fmt.Fprintln(os.Stderr, "mobilegate baseline: -write is required")
@@ -328,7 +328,7 @@ func scanAPK(apkPath string, firstPartyDomains, firstPartyPackages []string) (*s
 	if err != nil {
 		return nil, err
 	}
-	defer container.Close()
+	defer func() { _ = container.Close() }() // read-only zip container; nothing actionable on a close error
 
 	m, err := manifest.Parse(container.Manifest, container.ResourcesArsc)
 	if err != nil {

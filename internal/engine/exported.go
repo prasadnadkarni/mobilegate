@@ -81,7 +81,7 @@ const (
 const (
 	actionMain            = "android.intent.action.MAIN"
 	categoryLauncher      = "android.intent.category.LAUNCHER"
-	actionAppWidgetUpdate = "android.appwidget.action.APPWIDGET_UPDATE"
+	actionAppWidgetUpdate = "android.appwidget.action.APPWIDGET_UPDATE" // #nosec G101 -- an Android platform intent-action string, not a credential; gosec's heuristic false-positives on the shape
 )
 
 // ExclusionReason names why a reachable, otherwise-candidate component
