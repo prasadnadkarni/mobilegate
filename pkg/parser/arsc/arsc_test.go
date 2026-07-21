@@ -106,7 +106,7 @@ func encode16BitLength(n int) []byte {
 }
 
 func TestExtractGlobalStringPool_UTF8(t *testing.T) {
-	strs := []string{"", "hello", "AIzaSyFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE", "emoji:\U0001F600", "unicode: café résumé"}
+	strs := []string{"", "hello", "sample-long-string-value-for-pool-testing", "emoji:\U0001F600", "unicode: café résumé"}
 	data := buildTable(t, strs, true)
 
 	got, err := ExtractGlobalStringPool(data)
@@ -117,7 +117,7 @@ func TestExtractGlobalStringPool_UTF8(t *testing.T) {
 }
 
 func TestExtractGlobalStringPool_UTF16(t *testing.T) {
-	strs := []string{"", "hello", "AIzaSyFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE", "emoji:\U0001F600", "unicode: café résumé"}
+	strs := []string{"", "hello", "sample-long-string-value-for-pool-testing", "emoji:\U0001F600", "unicode: café résumé"}
 	data := buildTable(t, strs, false)
 
 	got, err := ExtractGlobalStringPool(data)
@@ -133,7 +133,7 @@ func TestExtractGlobalStringPool_UTF16(t *testing.T) {
 // header sizes (8 vs 12 bytes) and this proves headerSize is read from
 // the file rather than assumed.
 func TestExtractGlobalStringPool_BinaryXMLContainer(t *testing.T) {
-	strs := []string{"theme", "android:value", "AIzaSyFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE", "meta-data"}
+	strs := []string{"theme", "android:value", "sample-long-string-value-for-pool-testing", "meta-data"}
 	for _, utf8 := range []bool{true, false} {
 		data := buildXMLDoc(t, strs, utf8)
 		got, err := ExtractGlobalStringPool(data)

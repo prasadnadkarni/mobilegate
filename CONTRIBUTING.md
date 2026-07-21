@@ -48,6 +48,22 @@ never committed (see `testdata/real/README.md`) — they exist for
 parser-oracle verification and corpus-scale precision measurement, not
 as a substitute for hand-authored positive/negative rule fixtures.
 
+**MG-001's own fixtures will trip GitHub push protection, by design.**
+`internal/engine/mg001_fixtures_test.go` and `secrets_test.go` contain
+strings deliberately shaped to match real provider key formats
+(`sk_live_…`, `AKIA…`, `AIzaSy…`) — a secret-detection tool whose test
+data doesn't look like a secret isn't testing anything real. If a push
+of these files gets blocked, the correct fix is to allowlist that
+specific detection via the URL GitHub provides (confirming it's a known
+test fixture, which it is), **not** to alter the fixture string to
+dodge the scanner. Every other test fixture in this repo (DEX/ARSC pool
+tests, hash/baseline determinism tests, etc.) does not need to look
+like a credential and should not — those were deliberately de-fanged
+during initial publication specifically so contributors forking the
+repo don't hit push protection on a string that never needed that
+shape. If you're adding a fixture and it doesn't need a
+provider-key-like format to test what it's testing, don't give it one.
+
 ## Build and test
 
 ```sh

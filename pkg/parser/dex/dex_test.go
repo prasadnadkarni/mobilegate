@@ -102,7 +102,7 @@ func TestParseStrings_AttributionAndDecoding(t *testing.T) {
 		"Lcom/example/Foo;",                   // 0: type descriptor
 		"doSecret",                            // 1: method name
 		"apiKey",                              // 2: field name
-		"sk_live_FAKEKEYFORTESTING1234567890", // 3: unattributed data string
+		"unattributed-data-string-1234567890", // 3: unattributed data string — deliberately not secret-shaped (see MG-001's own fixtures for that), this test only exercises DEX string-pool extraction/attribution mechanics
 		"\x00embedded-null",                   // 4: literal NUL mid-string (MUTF-8 0xC0 0x80 case)
 		"emoji:\U0001F600",                    // 5: supplementary-plane char (CESU-8 surrogate pair case)
 	}
@@ -151,7 +151,7 @@ func TestParseStrings_AttributionAndDecoding(t *testing.T) {
 // string pool are never confused with another's — the requirement behind
 // stable finding_hash file paths across multi-dex APKs.
 func TestParseStrings_MultiDexAttribution(t *testing.T) {
-	strings := []string{"sk_live_FAKEKEYFORTESTING1234567890"}
+	strings := []string{"multidex-attribution-test-value-1234567890"}
 	data := buildDex(t, strings, nil, nil, nil)
 
 	refsA, err := ParseStrings("classes.dex", data)

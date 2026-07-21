@@ -3,8 +3,8 @@ package core
 import "testing"
 
 func TestComputeFindingHash_Deterministic(t *testing.T) {
-	a := ComputeFindingHash("MG-001", "assets/config.json", "aws-access-key-id", "AKIAABCDEFGHIJKLMNOP")
-	b := ComputeFindingHash("MG-001", "assets/config.json", "aws-access-key-id", "AKIAABCDEFGHIJKLMNOP")
+	a := ComputeFindingHash("MG-001", "assets/config.json", "aws-access-key-id", "example-match-value-a")
+	b := ComputeFindingHash("MG-001", "assets/config.json", "aws-access-key-id", "example-match-value-a")
 	if a != b {
 		t.Errorf("same inputs produced different hashes: %q vs %q", a, b)
 	}
@@ -19,8 +19,8 @@ func TestComputeFindingHash_DifferentRuleIDDiffers(t *testing.T) {
 }
 
 func TestComputeFindingHash_DifferentSourceDiffers(t *testing.T) {
-	a := ComputeFindingHash("MG-001", "assets/a.json", "x", "AKIAABCDEFGHIJKLMNOP")
-	b := ComputeFindingHash("MG-001", "assets/b.json", "x", "AKIAABCDEFGHIJKLMNOP")
+	a := ComputeFindingHash("MG-001", "assets/a.json", "x", "example-match-value-a")
+	b := ComputeFindingHash("MG-001", "assets/b.json", "x", "example-match-value-a")
 	if a == b {
 		t.Error("different source files produced the same hash")
 	}
@@ -35,8 +35,8 @@ func TestComputeFindingHash_DifferentPatternIDDiffers(t *testing.T) {
 }
 
 func TestComputeFindingHash_DifferentMatchValueDiffers(t *testing.T) {
-	a := ComputeFindingHash("MG-001", "assets/config.json", "aws-access-key-id", "AKIAAAAAAAAAAAAAAAAA")
-	b := ComputeFindingHash("MG-001", "assets/config.json", "aws-access-key-id", "AKIABBBBBBBBBBBBBBBB")
+	a := ComputeFindingHash("MG-001", "assets/config.json", "aws-access-key-id", "example-match-value-a")
+	b := ComputeFindingHash("MG-001", "assets/config.json", "aws-access-key-id", "example-match-value-b")
 	if a == b {
 		t.Error("different match values produced the same hash")
 	}
@@ -62,8 +62,8 @@ func TestComputeFindingHash_NoFieldBoundaryCollision(t *testing.T) {
 // internal/engine's fixture suite, where a real Line field exists to
 // move.
 func TestComputeFindingHash_LineNumberIsNotAnInput(t *testing.T) {
-	a := ComputeFindingHash("MG-001", "assets/config.json", "aws-access-key-id", "AKIAABCDEFGHIJKLMNOP")
-	b := ComputeFindingHash("MG-001", "assets/config.json", "aws-access-key-id", "AKIAABCDEFGHIJKLMNOP")
+	a := ComputeFindingHash("MG-001", "assets/config.json", "aws-access-key-id", "example-match-value-a")
+	b := ComputeFindingHash("MG-001", "assets/config.json", "aws-access-key-id", "example-match-value-a")
 	if a != b {
 		t.Fatal("identical rule/file/pattern/match-value inputs must hash identically regardless of any line number")
 	}
