@@ -38,6 +38,28 @@ func TestLoadFile_ParsesFirstPartyDomains(t *testing.T) {
 	}
 }
 
+func TestLoadFile_ParsesFirstPartyPackages(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".mobilegate.yml")
+	content := "policy:\n  first_party_packages:\n    - com.owncloud.android\n    - com.example.legacy\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	want := []string{"com.owncloud.android", "com.example.legacy"}
+	if len(c.Policy.FirstPartyPackages) != len(want) {
+		t.Fatalf("got %v, want %v", c.Policy.FirstPartyPackages, want)
+	}
+	for i, p := range want {
+		if c.Policy.FirstPartyPackages[i] != p {
+			t.Errorf("packages[%d] = %q, want %q", i, c.Policy.FirstPartyPackages[i], p)
+		}
+	}
+}
+
 func TestLoadFile_RejectsMalformedYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".mobilegate.yml")
 	if err := os.WriteFile(path, []byte("policy: [this is not a map"), 0o644); err != nil {

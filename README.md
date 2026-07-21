@@ -59,6 +59,7 @@ signals before it fires — no rule blocks on a single weak signal.
 | **MG-001** — Hardcoded production secret | AWS access keys, GCP/Firebase API keys, Stripe live secret keys, GitHub PATs (classic + fine-grained), Slack tokens, PEM private-key blocks with an actual key body — in the DEX string pool, `resources.arsc`, `AndroidManifest.xml`, and `assets/**`. Provider-prefix patterns adapted from gitleaks/trufflehog's public rule sets. | Blocking |
 | **MG-002** — Cleartext / accept-all transport | `android:usesCleartextTraffic="true"` (explicit, or implicit via `targetSdkVersion < 28`), and `network_security_config.xml` `<base-config>`/`<domain-config>` blocks permitting cleartext — domain-scoped matches only fire against a first-party domain allowlist you configure, never inferred. | Blocking |
 | **MG-003** — Plaintext sensitive storage (backup exposure) | `android:allowBackup="true"` (explicit, or implicit via `targetSdkVersion < 31`) with no `fullBackupContent`/`dataExtractionRules` override that actually restricts something, and no custom `backupAgent`. Implicit-and-narrowed-by-`targetSdkVersion≥31` is warning-tier, not blocking — the primary local-extraction path is closed on modern targets, cloud/D2D backup remain a residual risk. | Blocking (one signal is warning-tier) |
+| **MG-004** — Exported Android component without permission protection | `android:exported="true"` (explicit) or an unset `android:exported` with an `<intent-filter>` (implicit, pre-API-31 platform default) on an activity/service/receiver/provider, with no covering `android:permission`. Splits first-party vs. library-injected-via-manifest-merger origin (same finding, different remediation) — see `rules/MG-004-exported-component.yaml`. | Warning (see below) |
 | **MG-010** — Debug/test build artifact | `android:debuggable="true"` and `android:testOnly="true"` on the release candidate. Not in the original spec's MG-001–MG-009 catalog — split out from MG-003 deliberately: build-artifact hygiene is a different threat model and a different remediation owner than storage exposure. | Blocking |
 
 Each rule's YAML (`rules/*.yaml`) documents its exact signal logic,
@@ -66,10 +67,17 @@ what it excludes and why, and the corpus evidence behind blocking-tier
 status. That documentation is the actual spec — this table is a
 summary of it, not the other way around.
 
-**MG-004** (exported components without a permission guard) is written
-into the spec as a promotion candidate but not implemented — it needs
-its own negative-fixture suite before entering the blocking tier, per
-this project's own acceptance gate (see below).
+**MG-004** is written into the spec as a blocking-tier promotion
+candidate and passes its own negative-fixture suite with zero false
+positives — this project's technical acceptance gate. It ships
+warning-tier anyway: the 12-app real corpus found every single app
+firing (even after splitting first-party from library-origin
+components and tightening the origin heuristic — see
+`rules/MG-004-exported-component.yaml`'s "BLOCKING STATUS" note for the
+exact numbers and reasoning). CLAUDE.md: *"A blocking rule that fires
+on a clean app is a worse failure than one that misses a real issue."*
+Revisit once there's more signal on how much of that volume is real
+vs. common boilerplate this tool hasn't learned to recognize yet.
 
 ## Scope limits — stated plainly
 
@@ -230,12 +238,16 @@ policy:
   baseline_file: .mobilegate-baseline.yml
   first_party_domains:
     - example.com                # MG-002's domain-config allowlist
+  first_party_packages:
+    - com.example.legacy         # MG-004's origin-heuristic override — see below
 
 ignore_rules:
   - id: "MG-002"
     reason: "Required — suppression without a reason is a config load error, not a warning."
     paths: ["AndroidManifest.xml"]   # omit to suppress the rule everywhere
 ```
+
+`first_party_packages` overrides MG-004's exported-component origin classification (first-party vs. library-injected-via-dependency). The default heuristic compares a component's fully-qualified class name against your app's manifest package at the reverse-DNS org level (2 segments — e.g. `org.mozilla` covers both `org.mozilla.fenix.*` and an F-Droid rebuild's `org.mozilla.fennec_fdroid` applicationId), which handles common cases like build-flavor `applicationId` suffixes and same-org multi-module code. It can't know about a package inherited from a fork, an acquisition, or a rename with a genuinely different org name — list those explicitly here and they're always treated as first-party regardless of what the heuristic would guess.
 
 CLI flags (`-mode`, `-baseline`) override the committed file only when
 explicitly passed, so CI can force strict mode for one run without

@@ -1,0 +1,311 @@
+# MG-004 — Exported Android component without permission protection
+#
+# Spec: mobile-security-release-gate-build-prompt-v2.1.md, "Blocking-set
+# candidate for early promotion: MG-004." Listed in the spec as a
+# promotion candidate, not a guaranteed-blocking rule from day one —
+# "Ship it as blocking if it passes the negative-fixture suite cleanly;
+# if any false positive shows up... demote to warning until the
+# exclusion logic is tight."
+#
+# BLOCKING STATUS: warning-tier (blocking: false above), not because the
+# negative-fixture suite failed — it passed cleanly, zero false
+# positives, satisfying CLAUDE.md's technical bar — but because the
+# 12-app real corpus run found EVERY app fires (89 findings across 12
+# apps), and several of the recurring patterns
+# (androidx.media.session.MediaButtonReceiver, UnifiedPush's
+# service/receiver, ProfileInstallReceiver) turned out to be structurally
+# required by common libraries rather than developer oversights. The
+# origin split above (first-party vs. library) was added in response, to
+# make that distinction visible and give correct remediation — but even
+# with the split, first-party-origin components alone still fire broadly
+# enough across the corpus that blocking-tier isn't warranted yet.
+# CLAUDE.md: "A blocking rule that fires on a clean app is a worse
+# failure than one that misses a real issue." Revisit once there's more
+# signal on how much of the first-party volume is real vs. common
+# boilerplate this tool hasn't learned to recognize yet.
+#
+# Manifest-only, deterministic — no DEX/bytecode analysis, no new parser
+# package. The tri-state android:exported handling and per-filter
+# action/category extraction pkg/parser/manifest already has (built
+# originally for MG-002's launcher/widget-adjacent groundwork) is
+# exactly what this rule needs; nothing new was added to the parser
+# beyond a few more attributes/elements read off the same binary XML
+# this tool already decodes.
+id: MG-004
+name: Exported Android component without permission protection
+severity: high
+confidence: high
+platform: android
+blocking: false # see "BLOCKING STATUS" note below — demoted after the 12-app corpus run
+masvs: MASVS-PLATFORM-1
+cwe: CWE-926
+description: >
+  An activity, service, receiver, or provider is reachable by any app
+  installed on the device — either via an explicit
+  android:exported="true", or implicitly because it declares an
+  <intent-filter> with android:exported left unset (the platform's own
+  pre-API-31 default for that combination is exported=true) — with no
+  android:permission on the component itself or on <application> to
+  restrict who can invoke it.
+remediation: >
+  If the component genuinely needs to be reachable by other apps, guard
+  it with android:permission referencing a signature-level permission
+  this app declares (<permission android:protectionLevel="signature">),
+  so only your own other apps can reach it, or a documented, narrowly-
+  scoped platform permission if the audience is legitimately broader.
+  If it doesn't need to be reachable by anything outside this app, set
+  android:exported="false" (activities/services/receivers) — a
+  <provider> cannot be un-exported the same way if other apps
+  legitimately need it, so scope it instead: see the provider-specific
+  note below.
+
+# THE ACTUAL ATTACK, not just the config state: an exported, unguarded
+# component is invokable by ANY app installed on the device via a
+# crafted Intent — no user interaction, no visible UI from this app
+# required. For an activity, that can mean skipping past auth/consent
+# screens by launching a deeper screen directly. For a service, it can
+# mean triggering arbitrary background work with attacker-controlled
+# Intent extras. For a receiver, it can mean forging a broadcast this
+# app trusts came from itself or the platform. For a provider — see the
+# dedicated note below, since it's the highest-severity case here: data
+# exposure, not just code-path invocation.
+#
+# Signals (see CLAUDE.md multi-signal model). Four, not two — two
+# independent axes, neither collapsed into the other, because each
+# changes the correct remediation text:
+#
+# Axis 1 — reachability mechanism: an explicit opt-in and an implicit
+# platform default both end in the same reachability, but are reported
+# distinctly:
+#
+#   1. exported-explicit-no-permission-*: android:exported="true" is
+#      written on the component, no android:permission anywhere that
+#      would cover it. A fact the developer put in the file, whether or
+#      not they weighed the consequences of it — this rule does not
+#      guess at intent, only at the resulting reachability, the same
+#      discipline MG-003 applies to android:allowBackup="true" (also
+#      often an untouched template/IDE default, not evidence of a
+#      decision).
+#
+#   2. exported-implicit-intent-filter-no-permission-*: android:exported
+#      is unset, but the component has an <intent-filter> — the
+#      platform's own default for that combination is exported=true.
+#      Nobody wrote this down; it's a consequence of adding a filter
+#      without also stating exported explicitly. Fires regardless of
+#      targetSdkVersion (targetSdk is recorded on the finding as context
+#      either way): API 31 made android:exported mandatory to state
+#      whenever an intent-filter is present, so this signal can
+#      structurally only fire on apps below that target — a real app
+#      built against API 31+ literally cannot have this combination
+#      (the build fails without the attribute), which is itself useful
+#      corpus context, not just a detail. See
+#      internal/engine.reachability.
+#
+# Axis 2 — origin: first-party vs. library. Added after the 12-app
+# corpus run surfaced a pattern the original signal design didn't
+# anticipate: androidx.media.session.MediaButtonReceiver (NewPipe, VLC),
+# org.unifiedpush.android.connector.internal's service/receiver (Tusky,
+# Fennec), and androidx.profileinstaller.ProfileInstallReceiver (Simple
+# Flashlight, KeePassDX) are all injected into the merged
+# AndroidManifest.xml by a dependency via Android's build-time manifest
+# merger — the app developer never wrote these component declarations.
+# "Add android:permission to your component" is the wrong instruction
+# for a component the developer's own source doesn't contain.
+#
+# Detected deterministically, manifest-only, no dependency-graph
+# resolution, in two layers (internal/engine.isLibraryOrigin):
+#
+#   1. policy.first_party_packages (.mobilegate.yml) always wins, if
+#      set — same override principle, and same config location, as
+#      MG-002's policy.first_party_domains. A component under a
+#      configured entry is first-party regardless of what the heuristic
+#      below would say.
+#
+#   2. Default heuristic: a component's fully-qualified android:name
+#      (AAPT always resolves the "."-shorthand to fully-qualified at
+#      build time — verified against the real corpus) is compared
+#      against the app's own manifest package at 2-SEGMENT (reverse-DNS
+#      org) granularity, not a full exact-package match. A full-package
+#      match was tried first and rejected after corpus verification: it
+#      misclassified genuinely first-party code as library-origin in 5
+#      of 12 apps, via two recurring causes — Android build-flavor
+#      applicationId suffixes (Fennec's manifest package is
+#      org.mozilla.fennec_fdroid, an F-Droid rebrand, but its code is
+#      org.mozilla.fenix.*; all 10 of its findings were wrongly
+#      library-origin under exact matching) and same-org multi-module
+#      package roots (VLC's Android-TV UI lives under
+#      org.videolan.television.*, not org.videolan.vlc.*; 9 of its 10
+#      "library" findings were this). The 2-segment match fixes both
+#      while still correctly catching every confirmed genuine
+#      third-party case in the corpus (androidx.*, org.unifiedpush.*,
+#      com.canhub.*, com.adjust.*, mozilla.components.*).
+#
+# Design principle for anything still ambiguous after both layers: FAIL
+# TOWARD FIRST-PARTY. Mislabeling a developer's own code as "library"
+# tells them to ignore a finding they own — a worse error than the
+# reverse, where library code carries first-party remediation text and
+# the developer looks and correctly concludes it's a dependency. This is
+# why an unresolved manifest package, or a component name with no dot at
+# all, resolves to first-party rather than library.
+#
+# This is NOT a suppression and NOT a severity reduction — see the
+# "developer took explicit action" note near the end of this file for
+# why library-origin sits differently from MG-004's own provider
+# downgrade and from MG-003's suppression. A library-injected component
+# is exploitable exactly like a first-party one; only the remediation
+# differs (a manifest-merger override, e.g. tools:node, rather than
+# editing a component this app's source never declared).
+#
+# Known remaining gap, not hypothetical, NOT fixable by any segment-
+# count heuristic: Nextcloud's client ships legacy com.owncloud.android.*
+# classes (FileDisplayActivity, AuthenticatorActivity, etc.) alongside
+# its actual manifest package com.nextcloud.client — a holdover from the
+# codebase's ownCloud-client fork history, a genuinely different org
+# entirely. Confirmed present in the corpus run: 9 of Nextcloud's 10
+# "library" findings are this, not a real dependency. Only
+# policy.first_party_packages closes this one — e.g.
+#   policy:
+#     first_party_packages:
+#       - com.owncloud.android
+#
+# Exclusions (this is where precision lives — see CLAUDE.md's "a
+# blocking rule that fires on a clean app is a worse failure than one
+# that misses a real issue"). Applied in this order, checked against the
+# 12-app real corpus, not assumed:
+#
+#   - Launcher activity: MAIN action + LAUNCHER category in the SAME
+#     <intent-filter>. Must be exported for the OS launcher/app drawer
+#     to start it at all — this is the one universal, unavoidable case
+#     of "exported with no permission" that is correct by construction,
+#     not a gap. Checked per-filter, not by flattening a component's
+#     actions/categories across all its filters, because that's how the
+#     platform itself decides launcher-entry status — see
+#     internal/engine.hasLauncherFilter's doc comment for the (unlikely
+#     but real) precision failure flattening would risk.
+#
+#   - Widget-update receiver: <intent-filter> declaring
+#     android.appwidget.action.APPWIDGET_UPDATE. Verified against the
+#     real corpus, not assumed: Simple Flashlight's two
+#     AppWidgetProvider receivers (MyWidgetTorchProvider,
+#     MyWidgetBrightDisplayProvider) are exported with an empty
+#     android:permission — this does NOT fall out via the permission
+#     check the way the platform-permission cases below do, because
+#     Android's AppWidget framework doesn't gate APPWIDGET_UPDATE with
+#     a manifest permission at all; the host/launcher simply needs to
+#     be able to reach it. A required, explicit exclusion, not a
+#     fallout.
+#
+#   - Guarded by permission — component's own android:permission, or
+#     <application>'s, non-empty: ANY permission reference suppresses
+#     the finding, not just a verified signature-level one. This tool
+#     does not resolve the referenced permission's declared
+#     protectionLevel or verify it's actually restrictive — same
+#     precision-over-recall discipline as MG-003 not verifying a backup
+#     scoping file's sufficiency: presence of an explicit control is
+#     the fact this rule checks for, not whether that control is
+#     well-chosen, which is a human judgment call. Verified against the
+#     real corpus that this correctly, and *without* any special-casing,
+#     clears every platform-mandated-permission case the spec named as
+#     a concern:
+#       - androidx.profileinstaller.ProfileInstallReceiver (present in
+#         both Simple Flashlight and KeePassDX): permission=
+#         "android.permission.DUMP".
+#       - Simple Flashlight's FlashlightTileService/
+#         BrightDisplayTileService: permission=
+#         "android.permission.BIND_QUICK_SETTINGS_TILE".
+#       - KeePassDX's autofill/input-method/credential-provider
+#         services: permission=
+#         "android.permission.BIND_AUTOFILL_SERVICE" /
+#         "android.permission.BIND_INPUT_METHOD" /
+#         "android.permission.BIND_CREDENTIAL_PROVIDER_SERVICE".
+#     None of these needed a dedicated exclusion; the plain "is
+#     android:permission non-empty" check was always going to catch
+#     them, because a platform-mandated bind permission IS an
+#     android:permission value — confirmed empirically rather than
+#     assumed, per the build instruction that raised this exact
+#     question.
+#
+# NOT excluded, deliberately, pending human review rather than a
+# unilateral scope expansion: this corpus run surfaced legitimate-
+# looking exported/unguarded activities this rule was NOT explicitly
+# told to exclude — Simple Flashlight's SplashActivity (intent-filter
+# action android.service.quicksettings.action.QS_TILE_PREFERENCES, the
+# Quick Settings tile's "open app" target) and
+# WidgetTorchConfigureActivity/WidgetBrightDisplayConfigureActivity
+# (action android.appwidget.action.APPWIDGET_CONFIGURE, the widget
+# host's configuration-screen target). Both are platform-mandated-
+# reachable patterns structurally similar to the widget-update-receiver
+# case above — but were not in the original exclusion list, so they are
+# reported as real findings rather than silently added to the exclusion
+# set. See the corpus report for counts; this is exactly the kind of
+# result that should inform whether they need their own exclusion,
+# decided with real data in hand, not guessed at during rule design.
+#
+# Provider special case — severity, not exclusion. An unguarded exported
+# <provider> is elevated to "critical" (see
+# internal/engine.severityProvider), above this rule's own "high"
+# default, because an unguarded provider exposes DATA directly on
+# every read/query/insert/update/delete a caller sends, not just one
+# invocation path the way an activity/service/receiver does.
+#
+# If the provider declares <path-permission>, severity drops back to
+# "high" — the rule's own default tier, not lower, and not suppressed.
+# <path-permission> scopes SPECIFIC paths within the provider's URI
+# space; its presence proves the developer restricted something, but
+# proves nothing about paths it doesn't cover, and this tool has no
+# way to enumerate which paths the app's own code actually queries
+# without content-inference (out of scope, same reasoning MG-003 uses
+# to not verify a backup-scoping file's completeness). Suppressing
+# outright on <path-permission> presence — the same disposition MG-003
+# gives a backup-override — would be a bigger leap here: MG-003's
+# override mechanisms (a referenced scoping file, a custom backupAgent)
+# each apply to the WHOLE backup surface once present; <path-permission>
+# is inherently partial by design, so "some path is restricted" is not
+# evidence the finding's own excerpt path is. Lowering severity instead
+# of suppressing reports the same fact but doesn't imply this tool
+# verified something it structurally cannot verify.
+#
+# android:grantUriPermissions and <grant-uri-permission> deliberately do
+# NOT affect severity in either direction. They are a temporary-grant
+# SHARING mechanism (letting the provider owner hand another app access
+# to a specific URI via FLAG_GRANT_*_URI_PERMISSION), not an access
+# RESTRICTION — their presence says nothing about whether the base,
+# ungranted provider is guarded. If anything, an exported provider with
+# no android:permission that ALSO advertises broad URI-grant capability
+# is not a safer picture than one without it — but this rule does not
+# encode "make it worse," only "don't let it make it better," to avoid
+# a second, unrequested severity dimension nobody asked for.
+#
+# THREE "developer took explicit action" calls live in this rule and
+# MG-003, and they look inconsistent unless read together — written here
+# once so the reasoning doesn't get relitigated per-call later:
+#
+#   - MG-003 SUPPRESSES on a backup-scoping override (a referenced
+#     fullBackupContent/dataExtractionRules file, or a custom
+#     backupAgent), because each of those mechanisms applies to the
+#     WHOLE backup surface once present — the exclusion restricts the
+#     surface as a whole, so treating it as "handled" is a small leap.
+#
+#   - MG-004 LOWERS SEVERITY (critical → high), does not suppress, on a
+#     provider's <path-permission>, because path-level scoping is
+#     inherently PARTIAL — it restricts specific paths, and proves
+#     nothing about paths it doesn't cover. Suppressing outright would
+#     be a bigger leap than MG-003's case: it would hide a live hole
+#     this tool has no way to verify is actually covered.
+#
+#   - MG-004's origin split (this file, above) does NEITHER — a
+#     library-origin component gets different remediation TEXT ONLY,
+#     same severity, still fires. Origin says nothing about whether the
+#     component is actually guarded; it only says who has to fix it and
+#     how. Treating library-origin as safer or suppressing it would
+#     hide a real, exploitable hole for no defensible reason — the
+#     opposite error from "developer took explicit action" reasoning,
+#     which is about developer INTENT, not developer AUTHORSHIP.
+#
+# The pattern across all three: the exclusion/severity/remediation
+# response is proportional to how much the underlying signal actually
+# proves. A whole-surface override proves the whole surface was
+# considered (suppress). A partial scope proves partial coverage only
+# (downgrade, don't suppress). Component origin proves nothing about
+# guardedness at all (don't touch severity or firing — change only
+# where the fix instruction points).

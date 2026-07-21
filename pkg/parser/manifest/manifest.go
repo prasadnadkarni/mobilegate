@@ -66,15 +66,72 @@ type Manifest struct {
 	FullBackupContent   string
 	DataExtractionRules string
 	BackupAgent         string
+
+	// ApplicationPermission is android:permission on <application> — the
+	// platform-documented default required permission for every
+	// component that doesn't set its own android:permission. MG-004
+	// needs this because a component with no permission of its own can
+	// still be guarded at the application level.
+	ApplicationPermission string
 }
 
 // Component is one activity/service/receiver/provider entry.
 type Component struct {
-	Kind            ComponentKind
-	Name            string
-	Exported        Tristate
-	Permission      string
-	HasIntentFilter bool
+	Kind       ComponentKind
+	Name       string
+	Exported   Tristate
+	Permission string
+
+	// IntentFilters holds each <intent-filter>'s actions/categories,
+	// kept per-filter rather than flattened across all of a component's
+	// filters — MG-004's launcher-activity exclusion requires MAIN and
+	// LAUNCHER to appear in the SAME filter, per the platform's own
+	// launcher-matching semantics; flattening would let two unrelated
+	// filters (one with MAIN, a different one with LAUNCHER) produce a
+	// false match. len(IntentFilters) > 0 is what MG-002's original
+	// HasIntentFilter bool meant; kept obsolete name out of this comment
+	// since nothing else references it anymore.
+	IntentFilters []IntentFilter
+
+	// GrantUriPermissionsAttr/HasPathPermission/HasGrantUriPermissionElement
+	// are <provider>-specific; always false/zero for other component
+	// kinds. See MG-004's YAML for why only HasPathPermission (not the
+	// other two) factors into that rule's severity handling —
+	// grantUriPermissions and <grant-uri-permission> are a sharing
+	// mechanism, not an access *restriction*, so their presence doesn't
+	// change whether the provider itself is guarded.
+	GrantUriPermissionsAttr      bool
+	HasPathPermission            bool
+	HasGrantUriPermissionElement bool
+}
+
+// IntentFilter is one <intent-filter> block's actions and categories —
+// only what MG-004's exclusions need (the launcher MAIN+LAUNCHER
+// pattern, the widget-provider APPWIDGET_UPDATE pattern), not a general
+// intent-filter model (no data/scheme/mimeType).
+type IntentFilter struct {
+	Actions    []string
+	Categories []string
+}
+
+// HasAction reports whether this filter declares the given action name.
+func (f IntentFilter) HasAction(name string) bool {
+	for _, a := range f.Actions {
+		if a == name {
+			return true
+		}
+	}
+	return false
+}
+
+// HasCategory reports whether this filter declares the given category name.
+func (f IntentFilter) HasCategory(name string) bool {
+	for _, c := range f.Categories {
+		if c == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Tristate distinguishes "attribute absent" from an explicit true/false,
@@ -134,13 +191,39 @@ func (v *optionalInt32) UnmarshalXMLAttr(attr xml.Attr) error {
 	return v.Int32.UnmarshalXMLAttr(attr)
 }
 
-type intentFilterXML struct{}
+// nameAttrXML is the shared shape of <action>/<category>: just a single
+// android:name attribute, nothing else MG-004 needs.
+type nameAttrXML struct {
+	Name androidbinary.String `xml:"http://schemas.android.com/apk/res/android name,attr"`
+}
+
+type intentFilterXML struct {
+	Actions    []nameAttrXML `xml:"action"`
+	Categories []nameAttrXML `xml:"category"`
+}
+
+// pathPermissionXML/grantUriPermissionXML: presence-only for MG-004 (see
+// Component.HasPathPermission's doc comment) — no attributes read off
+// them, so these are deliberately empty structs; encoding/xml still
+// counts elements into a slice regardless of the element type.
+type pathPermissionXML struct{}
+type grantUriPermissionXML struct{}
 
 type activityXML struct {
 	Name          androidbinary.String `xml:"http://schemas.android.com/apk/res/android name,attr"`
 	Exported      optionalBool         `xml:"http://schemas.android.com/apk/res/android exported,attr"`
 	Permission    androidbinary.String `xml:"http://schemas.android.com/apk/res/android permission,attr"`
 	IntentFilters []intentFilterXML    `xml:"intent-filter"`
+
+	// <provider>-only attributes/elements — absent (zero value) on
+	// activity/service/receiver XML, since those elements never carry
+	// them; sharing one struct across all four kinds (see
+	// applicationXML below) is harmless because of that, and avoids a
+	// parallel providerXML type plus a second populate function for a
+	// handful of fields.
+	GrantUriPermissions optionalBool            `xml:"http://schemas.android.com/apk/res/android grantUriPermissions,attr"`
+	PathPermissions     []pathPermissionXML     `xml:"path-permission"`
+	GrantUriPermission  []grantUriPermissionXML `xml:"grant-uri-permission"`
 }
 
 type applicationXML struct {
@@ -152,6 +235,7 @@ type applicationXML struct {
 	FullBackupContent     androidbinary.String `xml:"http://schemas.android.com/apk/res/android fullBackupContent,attr"`
 	DataExtractionRules   androidbinary.String `xml:"http://schemas.android.com/apk/res/android dataExtractionRules,attr"`
 	BackupAgent           androidbinary.String `xml:"http://schemas.android.com/apk/res/android backupAgent,attr"`
+	Permission            androidbinary.String `xml:"http://schemas.android.com/apk/res/android permission,attr"`
 	Activities            []activityXML        `xml:"activity"`
 	Services              []activityXML        `xml:"service"`
 	Receivers             []activityXML        `xml:"receiver"`
@@ -205,6 +289,7 @@ func Parse(manifestBytes, resourcesArsc []byte) (*Manifest, error) {
 		FullBackupContent:     mustString(raw.App.FullBackupContent),
 		DataExtractionRules:   mustString(raw.App.DataExtractionRules),
 		BackupAgent:           mustString(raw.App.BackupAgent),
+		ApplicationPermission: mustString(raw.App.Permission),
 	}
 
 	m.Components = append(m.Components, componentsFrom(KindActivity, raw.App.Activities)...)
@@ -218,13 +303,38 @@ func Parse(manifestBytes, resourcesArsc []byte) (*Manifest, error) {
 func componentsFrom(kind ComponentKind, xs []activityXML) []Component {
 	out := make([]Component, 0, len(xs))
 	for _, x := range xs {
+		grantUriAttr, _ := x.GrantUriPermissions.Bool.Bool()
 		out = append(out, Component{
-			Kind:            kind,
-			Name:            mustString(x.Name),
-			Exported:        tristateFrom(x.Exported),
-			Permission:      mustString(x.Permission),
-			HasIntentFilter: len(x.IntentFilters) > 0,
+			Kind:                         kind,
+			Name:                         mustString(x.Name),
+			Exported:                     tristateFrom(x.Exported),
+			Permission:                   mustString(x.Permission),
+			IntentFilters:                intentFiltersFrom(x.IntentFilters),
+			GrantUriPermissionsAttr:      x.GrantUriPermissions.set && grantUriAttr,
+			HasPathPermission:            len(x.PathPermissions) > 0,
+			HasGrantUriPermissionElement: len(x.GrantUriPermission) > 0,
 		})
+	}
+	return out
+}
+
+func intentFiltersFrom(xs []intentFilterXML) []IntentFilter {
+	out := make([]IntentFilter, 0, len(xs))
+	for _, x := range xs {
+		out = append(out, IntentFilter{
+			Actions:    namesFrom(x.Actions),
+			Categories: namesFrom(x.Categories),
+		})
+	}
+	return out
+}
+
+func namesFrom(xs []nameAttrXML) []string {
+	out := make([]string, 0, len(xs))
+	for _, x := range xs {
+		if s := mustString(x.Name); s != "" {
+			out = append(out, s)
+		}
 	}
 	return out
 }

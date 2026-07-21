@@ -43,13 +43,29 @@ type componentKey struct {
 type componentTruth struct {
 	exported   string // "true" | "false" | "unset"
 	permission string
+
+	// actions/categories: every <intent-filter> child's <action>/
+	// <category> names, flattened across all of a component's filters
+	// and sorted — MG-004's actual exclusion logic (same-filter
+	// MAIN+LAUNCHER) is covered by unit fixtures, not this oracle; this
+	// only needs to confirm the parser extracted the right raw names at
+	// all, not re-verify per-filter grouping business logic.
+	actions    []string
+	categories []string
+
+	// <provider>-only; always false/zero for other kinds, same as
+	// pkg/parser/manifest.Component.
+	grantUriPermissions   bool
+	hasPathPermission     bool
+	hasGrantUriPermission bool
 }
 
 type groundTruth struct {
-	source               string // which tool produced this, for failure messages
-	packageName          string
-	usesCleartextTraffic string // "true" | "false" | "unset"
-	components           map[componentKey]componentTruth
+	source                string // which tool produced this, for failure messages
+	packageName           string
+	usesCleartextTraffic  string // "true" | "false" | "unset"
+	applicationPermission string
+	components            map[componentKey]componentTruth
 }
 
 func TestManifestAgainstAndroidSDK(t *testing.T) {
@@ -83,11 +99,27 @@ func TestManifestAgainstAndroidSDK(t *testing.T) {
 		t.Errorf("usesCleartextTraffic: parser=%q oracle(%s)=%q", gotCleartext, want.source, want.usesCleartextTraffic)
 	}
 
+	if want.applicationPermission != "" && got.ApplicationPermission != want.applicationPermission {
+		t.Errorf("application permission: parser=%q oracle(%s)=%q", got.ApplicationPermission, want.source, want.applicationPermission)
+	}
+
 	gotComponents := map[componentKey]componentTruth{}
 	for _, c := range got.Components {
+		var actions, categories []string
+		for _, f := range c.IntentFilters {
+			actions = append(actions, f.Actions...)
+			categories = append(categories, f.Categories...)
+		}
+		sort.Strings(actions)
+		sort.Strings(categories)
 		gotComponents[componentKey{kind: string(c.Kind), name: c.Name}] = componentTruth{
-			exported:   tristateStr(c.Exported),
-			permission: c.Permission,
+			exported:              tristateStr(c.Exported),
+			permission:            c.Permission,
+			actions:               actions,
+			categories:            categories,
+			grantUriPermissions:   c.GrantUriPermissionsAttr,
+			hasPathPermission:     c.HasPathPermission,
+			hasGrantUriPermission: c.HasGrantUriPermissionElement,
 		}
 	}
 
@@ -104,6 +136,23 @@ func TestManifestAgainstAndroidSDK(t *testing.T) {
 			}
 			if gotC.permission != wantC.permission {
 				mismatches = append(mismatches, fmt.Sprintf("%s %s: permission parser=%q oracle=%q", k.kind, k.name, gotC.permission, wantC.permission))
+			}
+			if !stringSlicesEqual(gotC.actions, wantC.actions) {
+				mismatches = append(mismatches, fmt.Sprintf("%s %s: intent-filter actions parser=%v oracle=%v", k.kind, k.name, gotC.actions, wantC.actions))
+			}
+			if !stringSlicesEqual(gotC.categories, wantC.categories) {
+				mismatches = append(mismatches, fmt.Sprintf("%s %s: intent-filter categories parser=%v oracle=%v", k.kind, k.name, gotC.categories, wantC.categories))
+			}
+			if k.kind == "provider" {
+				if gotC.grantUriPermissions != wantC.grantUriPermissions {
+					mismatches = append(mismatches, fmt.Sprintf("%s %s: grantUriPermissions parser=%v oracle=%v", k.kind, k.name, gotC.grantUriPermissions, wantC.grantUriPermissions))
+				}
+				if gotC.hasPathPermission != wantC.hasPathPermission {
+					mismatches = append(mismatches, fmt.Sprintf("%s %s: hasPathPermission parser=%v oracle=%v", k.kind, k.name, gotC.hasPathPermission, wantC.hasPathPermission))
+				}
+				if gotC.hasGrantUriPermission != wantC.hasGrantUriPermission {
+					mismatches = append(mismatches, fmt.Sprintf("%s %s: hasGrantUriPermission parser=%v oracle=%v", k.kind, k.name, gotC.hasGrantUriPermission, wantC.hasGrantUriPermission))
+				}
 			}
 		}
 		for k := range gotComponents {
@@ -128,6 +177,20 @@ func tristateStr(t manifest.Tristate) string {
 	default:
 		return "unset"
 	}
+}
+
+// stringSlicesEqual compares two already-sorted slices, treating nil and
+// empty as equal (both mean "no actions/categories").
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // groundTruthFor tries apkanalyzer first (it prints a fully reconstructed,
@@ -175,14 +238,36 @@ func findTool(name string) (string, error) {
 
 // --- apkanalyzer path: parses its reconstructed, real AndroidManifest.xml ---
 
-type gtComponent struct {
-	Name       string  `xml:"http://schemas.android.com/apk/res/android name,attr"`
-	Exported   *string `xml:"http://schemas.android.com/apk/res/android exported,attr"`
-	Permission *string `xml:"http://schemas.android.com/apk/res/android permission,attr"`
+type gtNamedElement struct {
+	Name string `xml:"http://schemas.android.com/apk/res/android name,attr"`
 }
+
+type gtIntentFilter struct {
+	Actions    []gtNamedElement `xml:"action"`
+	Categories []gtNamedElement `xml:"category"`
+}
+
+type gtComponent struct {
+	Name          string           `xml:"http://schemas.android.com/apk/res/android name,attr"`
+	Exported      *string          `xml:"http://schemas.android.com/apk/res/android exported,attr"`
+	Permission    *string          `xml:"http://schemas.android.com/apk/res/android permission,attr"`
+	IntentFilters []gtIntentFilter `xml:"intent-filter"`
+
+	// <provider>-only in practice; simply absent (zero value) on the
+	// other three kinds' real XML, same as pkg/parser/manifest's shared
+	// activityXML.
+	GrantUriPermissions *string  `xml:"http://schemas.android.com/apk/res/android grantUriPermissions,attr"`
+	PathPermissions     []gtVoid `xml:"path-permission"`
+	GrantUriPermission  []gtVoid `xml:"grant-uri-permission"`
+}
+
+// gtVoid: presence-only child elements, same reasoning as
+// pkg/parser/manifest's pathPermissionXML/grantUriPermissionXML.
+type gtVoid struct{}
 
 type gtApplication struct {
 	UsesCleartextTraffic *string       `xml:"http://schemas.android.com/apk/res/android usesCleartextTraffic,attr"`
+	Permission           *string       `xml:"http://schemas.android.com/apk/res/android permission,attr"`
 	Activities           []gtComponent `xml:"activity"`
 	Services             []gtComponent `xml:"service"`
 	Receivers            []gtComponent `xml:"receiver"`
@@ -211,12 +296,33 @@ func viaApkAnalyzer(toolPath, apkPath string) (*groundTruth, error) {
 		components:  map[componentKey]componentTruth{},
 	}
 	gt.usesCleartextTraffic = optStrTristate(m.App.UsesCleartextTraffic)
+	gt.applicationPermission = derefOr(m.App.Permission, "")
 
 	add := func(kind string, cs []gtComponent) {
 		for _, c := range cs {
+			var actions, categories []string
+			for _, f := range c.IntentFilters {
+				for _, a := range f.Actions {
+					actions = append(actions, a.Name)
+				}
+				for _, cat := range f.Categories {
+					categories = append(categories, cat.Name)
+				}
+			}
+			sort.Strings(actions)
+			sort.Strings(categories)
+			grantAttr := false
+			if c.GrantUriPermissions != nil {
+				grantAttr = *c.GrantUriPermissions == "true"
+			}
 			gt.components[componentKey{kind: kind, name: c.Name}] = componentTruth{
-				exported:   optStrTristate(c.Exported),
-				permission: derefOr(c.Permission, ""),
+				exported:              optStrTristate(c.Exported),
+				permission:            derefOr(c.Permission, ""),
+				actions:               actions,
+				categories:            categories,
+				grantUriPermissions:   grantAttr,
+				hasPathPermission:     len(c.PathPermissions) > 0,
+				hasGrantUriPermission: len(c.GrantUriPermission) > 0,
 			}
 		}
 	}

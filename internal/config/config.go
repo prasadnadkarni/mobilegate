@@ -6,8 +6,10 @@
 // Schema covered: policy.mode (strict/baseline), policy.baseline_file,
 // policy.first_party_domains (MG-002's domain allowlist — the original,
 // pre-baseline-mode field, now folded into the same loader rather than
-// living on its own), and ignore_rules (ruleset suppression with a
-// mandatory reason). policy.new_findings_only and a score threshold
+// living on its own), policy.first_party_packages (MG-004's origin-
+// heuristic override, same principle), and ignore_rules (ruleset
+// suppression with a mandatory reason). policy.new_findings_only and a
+// score threshold
 // override are NOT implemented — not asked for, and new_findings_only
 // in particular is redundant with what mode: baseline already does
 // unconditionally; adding a second knob for the same behavior would be
@@ -57,6 +59,15 @@ type Policy struct {
 	// against. Exact match or subdomain match (per that domain's own
 	// includeSubdomains) — see internal/engine's transport scanner.
 	FirstPartyDomains []string `yaml:"first_party_domains"`
+
+	// FirstPartyPackages overrides MG-004's default 2-segment-org
+	// origin heuristic (internal/engine.isLibraryOrigin) — exact or
+	// sub-package match against a component's fully-qualified name.
+	// Same override principle as FirstPartyDomains above: no inferred
+	// heuristic can fully resolve a team's own package roots after a
+	// fork, an acquisition, a rename, or a white-label build, so a
+	// reviewed config entry always wins over the guess.
+	FirstPartyPackages []string `yaml:"first_party_packages"`
 }
 
 // IgnoreRule is one policy-driven rule suppression — spec: "Rule

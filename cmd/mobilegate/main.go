@@ -1,10 +1,12 @@
 // Command mobilegate is the MobileGate CLI entrypoint.
 //
-// It runs four rules — MG-001 (hardcoded secrets), MG-002 (cleartext
-// transport), MG-003 (backup exposure), MG-010 (debug/test build
-// artifact) — and emits the release gate's actual product output: a
-// PASS/BLOCKED decision, the failed controls, a secondary score, and
-// (with -json) the spec's machine-readable output contract.
+// It runs five rules — MG-001 (hardcoded secrets), MG-002 (cleartext
+// transport), MG-003 (backup exposure), MG-004 (exported components,
+// warning-tier — see rules/MG-004-exported-component.yaml for why it
+// isn't blocking yet), MG-010 (debug/test build artifact) — and emits
+// the release gate's actual product output: a PASS/BLOCKED decision,
+// the failed controls, a secondary score, and (with -json) the spec's
+// machine-readable output contract.
 //
 // Three subcommands:
 //
@@ -78,7 +80,7 @@ func main() {
 func loadConfig(path string) (*config.Config, string) {
 	cfg, err := config.LoadFile(path)
 	if err != nil {
-		return &config.Config{}, fmt.Sprintf("config file %s is invalid (%v) — falling back to default policy: strict mode, no rule suppressions, no first-party domains. Fix the file and re-run", path, err)
+		return &config.Config{}, fmt.Sprintf("config file %s is invalid (%v) — falling back to default policy: strict mode, no rule suppressions, no first-party domains/packages. Fix the file and re-run", path, err)
 	}
 	return cfg, ""
 }
@@ -135,7 +137,7 @@ func runGate(args []string) {
 		baselineFile = *baselinePath
 	}
 
-	res, err := scanAPK(apkPath, cfg.Policy.FirstPartyDomains)
+	res, err := scanAPK(apkPath, cfg.Policy.FirstPartyDomains, cfg.Policy.FirstPartyPackages)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
 		os.Exit(1)
@@ -143,10 +145,10 @@ func runGate(args []string) {
 
 	if *debug {
 		if *jsonOut {
-			printDebugJSON(res.m, res.dexResults, res.mg001, res.mg002, res.mg003, res.mg010, res.surface)
+			printDebugJSON(res.m, res.dexResults, res.mg001, res.mg002, res.mg003, res.mg004, res.mg010, res.surface)
 			return
 		}
-		printDebugDump(apkPath, res.m, res.dexResults, res.mg001, res.mg002, res.mg003, res.mg010, res.surface)
+		printDebugDump(apkPath, res.m, res.dexResults, res.mg001, res.mg002, res.mg003, res.mg004, res.mg010, res.surface)
 		return
 	}
 
@@ -257,7 +259,7 @@ func runBaseline(args []string) {
 		baselineFile = *baselinePath
 	}
 
-	res, err := scanAPK(apkPath, cfg.Policy.FirstPartyDomains)
+	res, err := scanAPK(apkPath, cfg.Policy.FirstPartyDomains, cfg.Policy.FirstPartyPackages)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mobilegate: %v\n", err)
 		os.Exit(1)
@@ -282,6 +284,7 @@ type scanResult struct {
 	mg001      []core.Finding
 	mg002      []core.Finding
 	mg003      []core.Finding
+	mg004      []core.Finding
 	mg010      []core.Finding
 	surface    scanSurfaceCounts
 }
@@ -291,11 +294,12 @@ func (r *scanResult) allFindings() []core.Finding {
 	out = append(out, r.mg001...)
 	out = append(out, r.mg002...)
 	out = append(out, r.mg003...)
+	out = append(out, r.mg004...)
 	out = append(out, r.mg010...)
 	return out
 }
 
-func scanAPK(apkPath string, firstPartyDomains []string) (*scanResult, error) {
+func scanAPK(apkPath string, firstPartyDomains, firstPartyPackages []string) (*scanResult, error) {
 	container, err := apk.Open(apkPath)
 	if err != nil {
 		return nil, err
@@ -343,6 +347,11 @@ func scanAPK(apkPath string, firstPartyDomains []string) (*scanResult, error) {
 		return nil, err
 	}
 
+	mg004Findings, err := scanMG004(m, firstPartyPackages)
+	if err != nil {
+		return nil, err
+	}
+
 	mg010Findings, err := scanMG010(m)
 	if err != nil {
 		return nil, err
@@ -361,6 +370,7 @@ func scanAPK(apkPath string, firstPartyDomains []string) (*scanResult, error) {
 		mg001:      mg001Findings,
 		mg002:      mg002Findings,
 		mg003:      mg003Findings,
+		mg004:      mg004Findings,
 		mg010:      mg010Findings,
 		surface: scanSurfaceCounts{
 			dexStrings:      dexUnattributed, // only Unattributed strings are actually scanned — see ScanDexStrings
@@ -481,6 +491,27 @@ func readBackupOverrideFiles(container *apk.Container, m *manifest.Manifest) (*b
 		}
 	}
 	return fbc, der
+}
+
+// scanMG004 loads the embedded MG-004 rule and runs it against the
+// already-parsed manifest. Warning-tier (blocking: false in the rule's
+// own YAML) — see rules/MG-004-exported-component.yaml for why: the
+// 12-app corpus run found every app firing, so it isn't gated on yet,
+// only reported. firstPartyPackages is policy.first_party_packages from
+// .mobilegate.yml, overriding the origin heuristic's default 2-segment
+// org match — see engine.isLibraryOrigin.
+func scanMG004(m *manifest.Manifest, firstPartyPackages []string) ([]engine.Finding, error) {
+	data, err := rules.FS.ReadFile("MG-004-exported-component.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("loading MG-004 rule: %w", err)
+	}
+	rule, err := engine.LoadExportedRule(data)
+	if err != nil {
+		return nil, fmt.Errorf("MG-004: %w", err)
+	}
+	scanner := engine.NewExportedScanner(rule, firstPartyPackages)
+	findings, _ := scanner.CheckManifest(m) // exclusions are dev-facing only (debug dump), not part of the gate's finding output
+	return findings, nil
 }
 
 // scanMG010 loads the embedded MG-010 rule and runs it against the

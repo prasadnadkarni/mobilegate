@@ -23,7 +23,7 @@ const maxSampleStrings = 15
 // fields and DEX string samples that have nothing to do with the actual
 // product output (spec: "Emits PASS or BLOCKED, not a findings report")
 // but are useful for verifying the parser against a new APK by eye.
-func printDebugDump(apkPath string, m *manifest.Manifest, results []dexFileResult, mg001Findings, mg002Findings, mg003Findings, mg010Findings []engine.Finding, surface scanSurfaceCounts) {
+func printDebugDump(apkPath string, m *manifest.Manifest, results []dexFileResult, mg001Findings, mg002Findings, mg003Findings, mg004Findings, mg010Findings []engine.Finding, surface scanSurfaceCounts) {
 	fmt.Printf("APK: %s\n\n", apkPath)
 
 	fmt.Println("== MG-001: Hardcoded production secret ==")
@@ -40,6 +40,11 @@ func printDebugDump(apkPath string, m *manifest.Manifest, results []dexFileResul
 	fmt.Println("== MG-003: Plaintext sensitive storage (backup exposure) ==")
 	fmt.Printf("allowBackup: %s   targetSdkVersion: %s\n", tristateLabel(m.AllowBackup), targetSdkLabel(m.TargetSdkVersion))
 	printFindings(mg003Findings)
+	fmt.Println()
+
+	fmt.Println("== MG-004: Exported component without permission protection (warning-tier) ==")
+	fmt.Printf("targetSdkVersion: %s\n", targetSdkLabel(m.TargetSdkVersion))
+	printFindings(mg004Findings)
 	fmt.Println()
 
 	fmt.Println("== MG-010: Debug/test build artifact ==")
@@ -59,8 +64,8 @@ func printDebugDump(apkPath string, m *manifest.Manifest, results []dexFileResul
 	fmt.Printf("backupAgent:             %s\n", orNone(m.BackupAgent))
 	fmt.Printf("components:              %d\n", len(m.Components))
 	for _, c := range m.Components {
-		fmt.Printf("  [%-9s] %-60s exported=%-6s permission=%-30s intent-filter=%v\n",
-			c.Kind, c.Name, tristateLabel(c.Exported), orNone(c.Permission), c.HasIntentFilter)
+		fmt.Printf("  [%-9s] %-60s exported=%-6s permission=%-30s intent-filters=%d\n",
+			c.Kind, c.Name, tristateLabel(c.Exported), orNone(c.Permission), len(c.IntentFilters))
 	}
 
 	fmt.Println()
@@ -175,6 +180,7 @@ type debugJSONReport struct {
 	MG001Findings         []debugJSONFinding   `json:"mg001_findings"`
 	MG002Findings         []debugJSONFinding   `json:"mg002_findings"`
 	MG003Findings         []debugJSONFinding   `json:"mg003_findings"`
+	MG004Findings         []debugJSONFinding   `json:"mg004_findings"`
 	MG010Findings         []debugJSONFinding   `json:"mg010_findings"`
 }
 
@@ -202,11 +208,11 @@ type debugJSONFinding struct {
 }
 
 type debugJSONComponent struct {
-	Kind            string `json:"kind"`
-	Name            string `json:"name"`
-	Exported        string `json:"exported"`
-	Permission      string `json:"permission"`
-	HasIntentFilter bool   `json:"has_intent_filter"`
+	Kind          string `json:"kind"`
+	Name          string `json:"name"`
+	Exported      string `json:"exported"`
+	Permission    string `json:"permission"`
+	IntentFilters int    `json:"intent_filters"`
 }
 
 type debugJSONDexFile struct {
@@ -244,7 +250,7 @@ func toDebugJSONFindings(findings []engine.Finding) []debugJSONFinding {
 	return out
 }
 
-func printDebugJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings, mg002Findings, mg003Findings, mg010Findings []engine.Finding, surface scanSurfaceCounts) {
+func printDebugJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings, mg002Findings, mg003Findings, mg004Findings, mg010Findings []engine.Finding, surface scanSurfaceCounts) {
 	rep := debugJSONReport{
 		PackageName:           m.PackageName,
 		UsesCleartextTraffic:  tristateLabel(m.UsesCleartextTraffic),
@@ -265,15 +271,16 @@ func printDebugJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings
 		MG001Findings: toDebugJSONFindings(mg001Findings),
 		MG002Findings: toDebugJSONFindings(mg002Findings),
 		MG003Findings: toDebugJSONFindings(mg003Findings),
+		MG004Findings: toDebugJSONFindings(mg004Findings),
 		MG010Findings: toDebugJSONFindings(mg010Findings),
 	}
 	for _, c := range m.Components {
 		rep.Components = append(rep.Components, debugJSONComponent{
-			Kind:            string(c.Kind),
-			Name:            c.Name,
-			Exported:        tristateLabel(c.Exported),
-			Permission:      c.Permission,
-			HasIntentFilter: c.HasIntentFilter,
+			Kind:          string(c.Kind),
+			Name:          c.Name,
+			Exported:      tristateLabel(c.Exported),
+			Permission:    c.Permission,
+			IntentFilters: len(c.IntentFilters),
 		})
 	}
 	for _, r := range results {
