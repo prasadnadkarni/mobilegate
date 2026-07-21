@@ -10,7 +10,7 @@
 //
 // Three subcommands:
 //
-//	mobilegate [-mode strict|baseline] [-baseline path] [-json] [-debug] [-warnings] [-config path] <apk>
+//	mobilegate [-mode strict|baseline] [-baseline path] [-json] [-sarif path] [-debug] [-warnings] [-config path] <apk>
 //	mobilegate baseline -write [-baseline path] [-config path] <apk>
 //	mobilegate version
 //
@@ -90,12 +90,13 @@ func runGate(args []string) {
 	jsonOut := fs.Bool("json", false, "emit the machine-readable JSON output contract instead of the human-readable gate report")
 	debug := fs.Bool("debug", false, "emit the full parser-state dump (manifest fields, DEX string samples) instead of the gate report — development/troubleshooting only, not the product output")
 	markdownOut := fs.Bool("markdown", false, "emit a GitHub/GitLab-flavored Markdown PR comment instead of the human-readable gate report")
+	sarifPath := fs.String("sarif", "", "also write a SARIF 2.1.0 file to this path, for GitHub Code Scanning (upload separately with github/codeql-action/upload-sarif). Written alongside whatever -json/-markdown/default report is chosen, and even when the gate BLOCKS — see README's SARIF section for what does and doesn't map to a real source location")
 	showWarnings := fs.Bool("warnings", false, "show full warning-tier finding details in the terminal gate report (collapsed to a count by default)")
 	modeFlag := fs.String("mode", "", "override policy.mode from .mobilegate.yml: \"strict\" or \"baseline\". Unset (default): use the config file, defaulting to strict if it doesn't specify one — pass this explicitly to force a mode regardless of what's committed (e.g. CI forcing strict)")
 	baselinePath := fs.String("baseline", "", "override policy.baseline_file from .mobilegate.yml. Passing this alone (without -mode) also selects baseline mode, as a shorthand. Unset: use the config file's baseline_file, or this tool's own default path")
 	configPath := fs.String("config", ".mobilegate.yml", "path to .mobilegate.yml; a missing file is not an error, an invalid one falls back to safe defaults with a loud warning")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: mobilegate [-mode strict|baseline] [-baseline path] [-json|-markdown] [-debug] [-warnings] [-config path] <path-to-apk>")
+		fmt.Fprintln(os.Stderr, "usage: mobilegate [-mode strict|baseline] [-baseline path] [-json|-markdown] [-sarif path] [-debug] [-warnings] [-config path] <path-to-apk>")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
@@ -192,6 +193,29 @@ func runGate(args []string) {
 			fmt.Fprintf(os.Stderr, "mobilegate: %s\n", baselineNotice)
 		}
 		printGateReport(apkPath, mode, decision, score, blocking, warning, info, baselined, suppressed, *showWarnings)
+	}
+
+	if *sarifPath != "" {
+		// Written even when the gate BLOCKS — the exit(1) below must not
+		// short-circuit this, or SARIF/the Security tab would only ever
+		// see results from clean runs, exactly the runs that matter
+		// least. allFindings here already excludes baselined and
+		// policy-suppressed findings (see the SplitBySuppression/
+		// SplitByBaseline calls above) — see internal/sarif's package
+		// doc comment for why those must never reach SARIF output.
+		sourceManifestPath := cfg.Policy.SourceManifestPath
+		if sourceManifestPath == "" {
+			sourceManifestPath = defaultSourceManifestPath
+		}
+		log, err := buildSarifLog(apkPath, res.m.PackageName, allFindings, sourceManifestPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "mobilegate: building SARIF output: %v\n", err)
+			os.Exit(1)
+		}
+		if err := writeSarifFile(*sarifPath, log); err != nil {
+			fmt.Fprintf(os.Stderr, "mobilegate: writing SARIF output: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	if decision == core.GateBlocked {

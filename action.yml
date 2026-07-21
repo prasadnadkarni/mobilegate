@@ -74,6 +74,19 @@ inputs:
       automatic token.
     required: false
     default: ${{ github.token }}
+  sarif-file:
+    description: >-
+      Path to write a SARIF 2.1.0 file and upload it to GitHub Code
+      Scanning (via github/codeql-action/upload-sarif@v3 — this action
+      handles the upload itself, the calling workflow does not need its
+      own upload step). Unset (default): no SARIF file is produced and
+      no upload happens. Requires the calling workflow/job to grant
+      security-events: write — if that's missing, the upload step fails
+      loudly with GitHub's own permission error, it does not fail
+      silently. See the README's SARIF section for what does and
+      doesn't map to a real source location in the Security tab, and why.
+    required: false
+    default: ""
 
 outputs:
   gate-decision:
@@ -197,6 +210,7 @@ runs:
         APK_PATH: ${{ inputs.apk-path }}
         CONFIG_PATH: ${{ inputs.config-path }}
         BASELINE_PATH: ${{ inputs.baseline-path }}
+        SARIF_FILE: ${{ inputs.sarif-file }}
       run: |
         args=()
         if [ -n "$CONFIG_PATH" ]; then
@@ -205,13 +219,19 @@ runs:
         if [ -n "$BASELINE_PATH" ]; then
           args+=(-baseline "$BASELINE_PATH")
         fi
+        if [ -n "$SARIF_FILE" ]; then
+          args+=(-sarif "$SARIF_FILE")
+        fi
 
-        # Two runs of the same deterministic scan: -json for machine-
-        # readable outputs and the authoritative exit code, -markdown
-        # for the PR comment body. Neither run is allowed to short-
-        # circuit this step (set +e) — a BLOCKED result must still let
-        # the comment get posted below, before the LAST step in this
-        # action reflects the real exit code to the job.
+        # Two runs of the same deterministic scan: -json (plus -sarif,
+        # when requested — one flag writes an extra file alongside
+        # -json's stdout, not a third invocation) for machine-readable
+        # outputs and the authoritative exit code, -markdown for the PR
+        # comment body. Neither run is allowed to short-circuit this
+        # step (set +e) — a BLOCKED result must still let the comment
+        # get posted and the SARIF file get uploaded below, before the
+        # LAST step in this action reflects the real exit code to the
+        # job.
         set +e
         "$BIN" -json "${args[@]}" "$APK_PATH" > mobilegate-report.json
         code=$?
@@ -222,6 +242,26 @@ runs:
         echo "score=$(jq -r '.score // ""' mobilegate-report.json)" >> "$GITHUB_OUTPUT"
 
         "$BIN" -markdown "${args[@]}" "$APK_PATH" > mobilegate-report.md || true
+
+    - name: Upload SARIF to GitHub Code Scanning
+      # always(): this must run even on a BLOCKED result (the "Run
+      # MobileGate" step above never fails the step itself — see its own
+      # set +e/exit-code capture — but always() is also insurance against
+      # a later change to this action, or an unrelated step failure,
+      # silently skipping the exact runs a security team most wants
+      # visible in the Security tab) — and only when a SARIF file was
+      # actually requested.
+      if: ${{ always() && inputs.sarif-file != '' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif-file }}
+        # Reuses comment-marker rather than adding a new input: both
+        # exist for the same reason (distinguish multiple scans of this
+        # action in one workflow, e.g. multiple APK variants) — without
+        # a distinct category per scan, a second scan's upload would
+        # overwrite the first's alerts in the Security tab instead of
+        # appearing alongside them.
+        category: mobilegate-${{ inputs.comment-marker }}
 
     - name: Post or update PR comment
       if: ${{ inputs.comment-on-pr == 'true' }}

@@ -240,6 +240,7 @@ policy:
     - example.com                # MG-002's domain-config allowlist
   first_party_packages:
     - com.example.legacy         # MG-004's origin-heuristic override — see below
+  source_manifest_path: app/src/main/AndroidManifest.xml   # -sarif output's manifest-finding location — see "SARIF" below
 
 ignore_rules:
   - id: "MG-002"
@@ -339,6 +340,7 @@ static and self-contained.
 ./mobilegate app-release.apk                 # human-readable gate report
 ./mobilegate -json app-release.apk            # machine-readable output contract
 ./mobilegate -markdown app-release.apk        # GitHub/GitLab PR-comment Markdown
+./mobilegate -sarif out.sarif app-release.apk # also write SARIF 2.1.0 (combine with any of the above)
 ```
 
 Exit code is `1` on `BLOCKED`, `0` on `PASS` — designed to fail a CI
@@ -440,6 +442,7 @@ jobs:
 | `comment-marker` | no | `default` | Change only if one workflow scans multiple APKs and needs a separate comment per APK. |
 | `fail-on-comment-error` | no | `true` | See "Permissions" below. |
 | `github-token` | no | `${{ github.token }}` | |
+| `sarif-file` | no | *(unset — no SARIF output, no upload)* | See "SARIF / GitHub Code Scanning" below. Needs `security-events: write`. |
 
 ### Outputs
 
@@ -483,6 +486,118 @@ scan itself was a clean `PASS`. Set `fail-on-comment-error: false` only
 if you'd rather the scan result alone govern the action's outcome and
 you're fine with comments silently not appearing when permissions are
 wrong — that's an explicit opt-out, not the default, on purpose.
+
+### SARIF / GitHub Code Scanning
+
+`-sarif <path>` (CLI) / `sarif-file` (action input) writes a SARIF
+2.1.0 file and, via the action, uploads it with
+`github/codeql-action/upload-sarif@v3` so findings show up in the repo's
+**Security → Code scanning** tab alongside CodeQL and any other SARIF
+producer:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write   # required for the SARIF upload — see below
+
+steps:
+  - uses: prasadnadkarni/mobilegate@v0.1.0
+    with:
+      apk-path: app/build/outputs/apk/release/app-release-unsigned.apk
+      sarif-file: mobilegate.sarif
+```
+
+**Read this before relying on where alerts appear to point.** SARIF
+assumes a finding lives in a source file GitHub can check out and
+diff. MobileGate's findings live inside a *compiled binary APK* —
+there is no source file for a DEX string pool index or a merged
+resources.arsc entry, and even the manifest MobileGate actually parses
+is the compiled, **merged** `AndroidManifest.xml`, not the source file
+you edit. Rather than fabricate a plausible-but-wrong location (worse
+than an honest one — it actively misleads triage: "I checked that
+file, there's nothing there"), MobileGate maps locations honestly:
+
+- **Manifest findings** (MG-002's manifest signal, MG-003, MG-004,
+  MG-010) map to `policy.source_manifest_path` in `.mobilegate.yml`
+  (default: `app/src/main/AndroidManifest.xml`, the standard Gradle
+  module layout — override it if your manifest lives elsewhere). This
+  is the one case a real repo file is being pointed at. Attribute
+  values match what MobileGate actually saw (the manifest merger
+  doesn't rewrite `android:exported` or `android:allowBackup`), but
+  **line numbers do not correspond** to anything in that file — the
+  merged manifest MobileGate parses has different line numbers, if it
+  has recognizable lines at all. MobileGate never fabricates a line
+  number it can't verify; alerts point at the file, not a specific
+  line.
+- **Everything else** — MG-001 (DEX strings, `resources.arsc`, asset
+  files) and MG-002's `network_security_config.xml`-based signal — has
+  **no source-repo equivalent at all**. These map `artifactLocation.uri`
+  to the APK file's own name. GitHub will list these alerts in the
+  Security tab, but cannot render an inline PR diff annotation for
+  them, because there genuinely isn't a diffable source location. The
+  real in-artifact location (which DEX file, which string pool index,
+  which manifest element) is always in the alert's message text and in
+  its `properties`, specifically so it's still useful even when the
+  physical location is coarse.
+
+```yaml
+policy:
+  source_manifest_path: mobile/src/main/AndroidManifest.xml  # only if not app/src/main
+```
+
+**Severity ranking.** GitHub's Critical/High/Medium/Low ranking in the
+Security tab reads `security-severity` — and, confirmed against
+GitHub's own docs, reads it **only** from the rule itself, never from
+an individual result. A MobileGate severity maps to GitHub's documented
+bands (critical >9.0, high 7.0–8.9, medium 4.0–6.9, low 0.1–3.9) at the
+middle of each band:
+
+| MobileGate severity | security-severity | GitHub band |
+|---|---|---|
+| critical | 9.5 | Critical |
+| high | 7.5 | High |
+| medium | 5.5 | Medium |
+| low | 2.5 | Low |
+
+Because this is rule-level, not result-level, a rule that can produce
+findings at more than one severity (MG-004: "high" by default, but
+"critical" for an unguarded exported `<provider>` — direct data
+exposure, not just an invokable component) reports the **worst
+severity actually observed in that run**, not its nominal default — so
+a critical provider finding doesn't get silently under-ranked as
+merely "high" just because most MG-004 findings aren't providers. The
+finding's true, specific severity is still in `properties.severity` on
+the result itself.
+
+**Suppressed and baselined findings are not uploaded to SARIF at all.**
+This is a deliberate deviation worth calling out explicitly: SARIF has
+a native `results[].suppressions` mechanism, and the obvious design
+would be to use it so suppressed findings stay visible in the Security
+tab without alerting. Confirmed against GitHub's documentation and a
+May 2025 GitHub-staff reply on a public community discussion:
+**`results[].suppressions` is not currently honored by GitHub's SARIF
+ingestion.** A suppressed result uploaded there would not show as
+suppressed — it would show as a normal, active, alerting result, which
+is the opposite of what suppression means. Rather than ship something
+that looks like it works but silently doesn't, MobileGate omits
+baselined and `ignore_rules`-suppressed findings from SARIF output
+entirely. They remain fully visible, with their reason, in every other
+MobileGate output format (terminal, `-json`, `-markdown`) — this only
+affects what reaches GitHub's Security tab.
+
+**Re-running doesn't duplicate alerts.** GitHub tracks an alert's
+identity across runs via `partialFingerprints.primaryLocationLineHash`
+— the only fingerprint key it actually reads. MobileGate puts its own
+`finding_hash` there (the same stable identity baseline mode uses),
+not a source-line-derived value, since there's frequently no source
+line to derive one from.
+
+**What happens if `security-events: write` is missing:** the upload
+step (`github/codeql-action/upload-sarif@v3`) fails loudly with
+GitHub's own permission error — it is a normal action step with no
+`continue-on-error`, so the job fails visibly, the same "fail loudly,
+not silently" standard as the PR-comment permission above.
 
 ## Development
 

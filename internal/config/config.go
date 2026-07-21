@@ -7,9 +7,10 @@
 // policy.first_party_domains (MG-002's domain allowlist — the original,
 // pre-baseline-mode field, now folded into the same loader rather than
 // living on its own), policy.first_party_packages (MG-004's origin-
-// heuristic override, same principle), and ignore_rules (ruleset
-// suppression with a mandatory reason). policy.new_findings_only and a
-// score threshold
+// heuristic override, same principle), policy.source_manifest_path
+// (-sarif output's manifest-finding location mapping), and ignore_rules
+// (ruleset suppression with a mandatory reason). policy.new_findings_only
+// and a score threshold
 // override are NOT implemented — not asked for, and new_findings_only
 // in particular is redundant with what mode: baseline already does
 // unconditionally; adding a second knob for the same behavior would be
@@ -68,6 +69,19 @@ type Policy struct {
 	// fork, an acquisition, a rename, or a white-label build, so a
 	// reviewed config entry always wins over the guess.
 	FirstPartyPackages []string `yaml:"first_party_packages"`
+
+	// SourceManifestPath is where -sarif output points a manifest-based
+	// finding's artifactLocation.uri — the app's own, uncompiled
+	// AndroidManifest.xml source file in this repo, NOT the merged,
+	// compiled manifest MobileGate actually parses out of the APK (see
+	// internal/sarif's package doc comment for why that distinction
+	// matters: attribute values match, line numbers don't, and this
+	// tool never fabricates a line it can't verify). Empty means the
+	// caller's own default (cmd/mobilegate's defaultSourceManifestPath,
+	// "app/src/main/AndroidManifest.xml" — the standard Gradle module
+	// layout) — this package doesn't hardcode that default, same reason
+	// BaselineFile doesn't.
+	SourceManifestPath string `yaml:"source_manifest_path"`
 }
 
 // IgnoreRule is one policy-driven rule suppression — spec: "Rule

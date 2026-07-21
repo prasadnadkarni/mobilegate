@@ -60,6 +60,32 @@ func TestLoadFile_ParsesFirstPartyPackages(t *testing.T) {
 	}
 }
 
+func TestLoadFile_ParsesSourceManifestPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".mobilegate.yml")
+	content := "policy:\n  source_manifest_path: mobile/src/main/AndroidManifest.xml\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if c.Policy.SourceManifestPath != "mobile/src/main/AndroidManifest.xml" {
+		t.Errorf("SourceManifestPath = %q, want %q", c.Policy.SourceManifestPath, "mobile/src/main/AndroidManifest.xml")
+	}
+}
+
+func TestLoadFile_UnsetSourceManifestPathIsEmpty(t *testing.T) {
+	c, err := LoadFile(filepath.Join(t.TempDir(), "does-not-exist.yml"))
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if c.Policy.SourceManifestPath != "" {
+		t.Errorf("SourceManifestPath = %q, want empty (caller applies its own default)", c.Policy.SourceManifestPath)
+	}
+}
+
 func TestLoadFile_RejectsMalformedYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".mobilegate.yml")
 	if err := os.WriteFile(path, []byte("policy: [this is not a map"), 0o644); err != nil {
