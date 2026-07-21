@@ -24,6 +24,72 @@
 # signal on how much of the first-party volume is real vs. common
 # boilerplate this tool hasn't learned to recognize yet.
 #
+# INVESTIGATED AND REJECTED: a structurally-scoped blocking tier limited
+# to first-party service+provider findings (excluding activity/receiver,
+# which carry the bulk of the volume and the most boilerplate-shaped
+# noise). Checked against the corpus rather than assumed: of 68
+# first-party findings, only 9 are service/provider — 6 services, 3
+# providers, concentrated in 5 of 12 apps. Broken down by hand rather
+# than shipped:
+#
+#   - 4 of the 6 services are media-session playback services
+#     (Nextcloud's BackgroundPlayerService, AntennaPod's PlaybackService,
+#     NewPipe's PlayerService, VLC's PlaybackService) — the same
+#     structural category as androidx.media.session.MediaButtonReceiver:
+#     exported so the platform's media-session framework and Bluetooth/
+#     wired hardware controls can reach them, with no meaningful
+#     permission an app could add without breaking that integration.
+#   - 1 is Fennec's org.mozilla.fenix.customtabs.CustomTabsService — a
+#     documented CROSS-APP API contract (the Chrome Custom Tabs
+#     protocol, action android.support.customtabs.action.CustomTabsService).
+#     Being exported IS the interface; no permission is possible without
+#     breaking the protocol every consumer of Custom Tabs expects. Worth
+#     naming specifically: this is first-party CODE implementing a
+#     third-party PROTOCOL — the origin split (first-party vs. library)
+#     correctly calls it first-party, since Fennec's own developers wrote
+#     this class, but origin alone doesn't capture "structurally
+#     required by an external contract," which is a genuinely different
+#     axis from "injected by a dependency via manifest merger." No
+#     exclusion added for this pending more than one example.
+#   - 1 is VLC's org.videolan.vlc.remoteaccessserver.RemoteAccessService
+#     — does not fit either pattern above. Ordinary app-specific
+#     functionality (a remote-access/web-server feature), not something
+#     the platform or a documented protocol requires to be exported. No
+#     evidence this is anything other than a real, if minor, finding.
+#   - All 3 providers are VLC's: TVSearchProvider (has <path-permission>,
+#     already severity-downgraded to high, not critical),
+#     FileProvider and ArtworkProvider (critical, no path-permission).
+#     Checked whether FileProvider might be the standard, safely-guarded
+#     androidx FileProvider pattern (grantUriPermissions + a scoped
+#     file_paths.xml, non-exported) rather than a real gap: VLC's
+#     manifest declares TWO separate <provider> entries sharing nothing
+#     but a similar name — androidx.core.content.FileProvider itself
+#     (exported=false, grantUriPermissions=true: the correctly-configured
+#     library default) and a DISTINCT org.videolan.vlc.FileProvider
+#     (exported=true, grantUriPermissions=false, no <path-permission>:
+#     zero of the standard pattern's protections). Whether
+#     org.videolan.vlc.FileProvider's class extends androidx's is not
+#     verifiable without decompiling DEX bytecode — out of scope per
+#     CLAUDE.md's hard constraint — but the manifest configuration
+#     answers the question that actually matters: it is exported with
+#     none of the mitigations the safe pattern requires, which is itself
+#     already a deviation from Google's own FileProvider guidance
+#     ("you must also set... exported... to false"). The critical
+#     finding stands as a real gap, not a false positive from an
+#     unusually-configured safe variant.
+#
+# Net: after removing the 1 CustomTabsService and 1 RemoteAccessService
+# that don't cleanly fit "platform-required," the genuine
+# service+provider candidate set is ~5 findings (4 media-session
+# services + up to 3 VLC providers, minus TVSearchProvider's own
+# downgrade) concentrated almost entirely in ONE app (VLC). A blocking
+# tier justified by one outlier app's own remote-access feature and file
+# providers is not a defensible blocking tier — it would functionally
+# be "block VLC specifically," not a general Android security control.
+# Not shipped. Revisit if a wider corpus shows service/provider volume
+# that isn't this concentrated, i.e. with real field data across more
+# apps, not by relaxing this conclusion on the same 12-app sample.
+#
 # Manifest-only, deterministic — no DEX/bytecode analysis, no new parser
 # package. The tri-state android:exported handling and per-filter
 # action/category extraction pkg/parser/manifest already has (built
