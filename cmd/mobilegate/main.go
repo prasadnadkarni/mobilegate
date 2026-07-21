@@ -6,10 +6,11 @@
 // PASS/BLOCKED decision, the failed controls, a secondary score, and
 // (with -json) the spec's machine-readable output contract.
 //
-// Two subcommands:
+// Three subcommands:
 //
 //	mobilegate [-mode strict|baseline] [-baseline path] [-json] [-debug] [-warnings] [-config path] <apk>
 //	mobilegate baseline -write [-baseline path] [-config path] <apk>
+//	mobilegate version
 //
 // Policy (mode, baseline file, first-party domains, rule suppression)
 // lives in .mobilegate.yml — a file a team reviews and commits — not in
@@ -46,9 +47,21 @@ import (
 const defaultBaselinePath = ".mobilegate-baseline.yml"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "baseline" {
-		runBaseline(os.Args[2:])
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "baseline":
+			runBaseline(os.Args[2:])
+			return
+		case "version":
+			// scanner_version + rule_version, same identity the JSON
+			// contract and baseline files carry — lets CI (and a human)
+			// confirm what a downloaded release binary actually is
+			// before trusting anything it says. Deliberately plain text,
+			// not JSON: this is a quick human/shell smoke check, not
+			// another output contract to keep stable.
+			fmt.Printf("mobilegate %s (rules %s)\n", scannerVersion, ruleVersion)
+			return
+		}
 	}
 	runGate(os.Args[1:])
 }

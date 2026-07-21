@@ -1,0 +1,288 @@
+name: "MobileGate"
+description: >-
+  Android APK security release gate. Runs MobileGate against a built
+  APK, fails the workflow on BLOCKED, and posts/updates a PR comment
+  with the result.
+author: "Prasad Nadkarni"
+branding:
+  icon: "shield"
+  color: "red"
+
+inputs:
+  apk-path:
+    description: >-
+      Path to the APK to scan. This is almost always a build artifact
+      produced earlier in the same job (e.g. Gradle's
+      app/build/outputs/apk/release/app-release.apk) — MobileGate does
+      not build your app, and this action does not assume the APK is
+      committed to the repo.
+    required: true
+  config-path:
+    description: >-
+      Path to .mobilegate.yml. Unset: MobileGate uses its own default
+      (.mobilegate.yml in the working directory); a missing file there
+      is not an error.
+    required: false
+    default: ""
+  baseline-path:
+    description: >-
+      Path to a baseline file, enabling baseline mode for this run
+      (findings already present in the baseline don't block). Unset:
+      mode comes from .mobilegate.yml's policy.mode (defaulting to
+      strict if that's also unset) — see the README's baseline mode
+      section.
+    required: false
+    default: ""
+  version:
+    description: >-
+      MobileGate release version to fetch, e.g. "v0.1.0". Default
+      "latest" resolves to the newest GitHub release at
+      github.com/prasadnadkarni/mobilegate/releases. Pin an exact
+      version for a reproducible pipeline.
+    required: false
+    default: "latest"
+  comment-on-pr:
+    description: >-
+      Post (or update) a PR comment with the Markdown report. Ignored
+      (no-op, not an error) on any event that isn't a pull request.
+    required: false
+    default: "true"
+  comment-marker:
+    description: >-
+      Distinguishes this action's PR comment from others so re-runs
+      update the same comment instead of stacking new ones. Only worth
+      changing if a single workflow scans multiple APKs and needs a
+      separate comment per APK.
+    required: false
+    default: "default"
+  fail-on-comment-error:
+    description: >-
+      Fail the action if comment-on-pr is true but posting/updating the
+      comment fails (including a missing pull-requests: write
+      permission) — spec: fail loudly, not silently. Set to "false" to
+      let a comment-posting failure be non-fatal while the scan result
+      itself still governs the action's exit code.
+    required: false
+    default: "true"
+  github-token:
+    description: >-
+      Token used to (a) fetch the pinned MobileGate release (any valid
+      token clears GitHub's unauthenticated rate limit; the release is
+      public) and (b) post/update the PR comment, which specifically
+      needs pull-requests: write on the CALLING workflow's token — see
+      the README's permissions section. Defaults to the workflow's own
+      automatic token.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  gate-decision:
+    description: '"pass" or "blocked" — mirrors the JSON contract''s gate_decision field.'
+    value: ${{ steps.scan.outputs.gate-decision }}
+  score:
+    description: "The secondary 0-100 score (see README: never contradicts gate-decision)."
+    value: ${{ steps.scan.outputs.score }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        APK_PATH: ${{ inputs.apk-path }}
+      run: |
+        if [ -z "$APK_PATH" ]; then
+          echo "::error::apk-path is required and was empty."
+          exit 1
+        fi
+        if [ ! -f "$APK_PATH" ]; then
+          echo "::error::apk-path '$APK_PATH' does not exist. If it's a build artifact, make sure the build step runs BEFORE this action in the same job (artifacts from a separate job need actions/download-artifact first — a separate job is a separate, clean filesystem)."
+          exit 1
+        fi
+
+    - name: Resolve platform
+      id: platform
+      shell: bash
+      run: |
+        case "$RUNNER_OS" in
+          Linux) os=linux; ext=tar.gz ;;
+          macOS) os=darwin; ext=tar.gz ;;
+          Windows) os=windows; ext=zip ;;
+          *) echo "::error::Unsupported runner OS: $RUNNER_OS"; exit 1 ;;
+        esac
+        case "$RUNNER_ARCH" in
+          X64) arch=amd64 ;;
+          ARM64) arch=arm64 ;;
+          *) echo "::error::Unsupported runner arch: $RUNNER_ARCH (MobileGate ships linux/darwin/windows x amd64/arm64 — see .goreleaser.yml)"; exit 1 ;;
+        esac
+        echo "os=$os" >> "$GITHUB_OUTPUT"
+        echo "arch=$arch" >> "$GITHUB_OUTPUT"
+        echo "ext=$ext" >> "$GITHUB_OUTPUT"
+        echo "archive=mobilegate_${os}_${arch}.${ext}" >> "$GITHUB_OUTPUT"
+
+    - name: Download and verify MobileGate ${{ inputs.version }}
+      id: download
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        VERSION: ${{ inputs.version }}
+        ARCHIVE: ${{ steps.platform.outputs.archive }}
+        EXT: ${{ steps.platform.outputs.ext }}
+      run: |
+        dl_dir="${RUNNER_TEMP}/mobilegate-dl"
+        mkdir -p "$dl_dir"
+
+        tag_args=()
+        if [ -n "$VERSION" ] && [ "$VERSION" != "latest" ]; then
+          tag_args=("$VERSION")
+        fi
+
+        echo "::group::Downloading $ARCHIVE (${VERSION})"
+        gh release download "${tag_args[@]}" \
+          --repo prasadnadkarni/mobilegate \
+          --pattern "$ARCHIVE" \
+          --pattern "checksums.txt" \
+          --dir "$dl_dir" \
+          --clobber
+        echo "::endgroup::"
+
+        cd "$dl_dir"
+        if [ ! -f "$ARCHIVE" ] || [ ! -f checksums.txt ]; then
+          echo "::error::Download incomplete — expected $ARCHIVE and checksums.txt in $dl_dir. Check that '${VERSION}' is a real release tag at github.com/prasadnadkarni/mobilegate/releases."
+          exit 1
+        fi
+
+        grep " ${ARCHIVE}\$" checksums.txt > archive.sha256
+        if [ ! -s archive.sha256 ]; then
+          echo "::error::$ARCHIVE is not listed in checksums.txt — refusing to run an unverified binary."
+          exit 1
+        fi
+
+        echo "::group::Verifying checksum"
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha256sum -c archive.sha256
+        elif command -v shasum >/dev/null 2>&1; then
+          shasum -a 256 -c archive.sha256
+        else
+          echo "::error::Neither sha256sum nor shasum is available on this runner — cannot verify the download."
+          exit 1
+        fi
+        echo "::endgroup::"
+
+        bin_dir="${RUNNER_TEMP}/mobilegate-bin"
+        mkdir -p "$bin_dir"
+        if [ "$EXT" = "zip" ]; then
+          unzip -o "$ARCHIVE" -d "$bin_dir"
+          bin_name="mobilegate.exe"
+        else
+          tar xzf "$ARCHIVE" -C "$bin_dir"
+          bin_name="mobilegate"
+        fi
+        chmod +x "$bin_dir/$bin_name" 2>/dev/null || true
+
+        echo "path=$bin_dir/$bin_name" >> "$GITHUB_OUTPUT"
+
+    - name: Smoke-test the binary
+      shell: bash
+      env:
+        BIN: ${{ steps.download.outputs.path }}
+      run: |
+        "$BIN" version
+
+    - name: Run MobileGate
+      id: scan
+      shell: bash
+      env:
+        BIN: ${{ steps.download.outputs.path }}
+        APK_PATH: ${{ inputs.apk-path }}
+        CONFIG_PATH: ${{ inputs.config-path }}
+        BASELINE_PATH: ${{ inputs.baseline-path }}
+      run: |
+        args=()
+        if [ -n "$CONFIG_PATH" ]; then
+          args+=(-config "$CONFIG_PATH")
+        fi
+        if [ -n "$BASELINE_PATH" ]; then
+          args+=(-baseline "$BASELINE_PATH")
+        fi
+
+        # Two runs of the same deterministic scan: -json for machine-
+        # readable outputs and the authoritative exit code, -markdown
+        # for the PR comment body. Neither run is allowed to short-
+        # circuit this step (set +e) — a BLOCKED result must still let
+        # the comment get posted below, before the LAST step in this
+        # action reflects the real exit code to the job.
+        set +e
+        "$BIN" -json "${args[@]}" "$APK_PATH" > mobilegate-report.json
+        code=$?
+        set -e
+
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        echo "gate-decision=$(jq -r '.gate_decision // "unknown"' mobilegate-report.json)" >> "$GITHUB_OUTPUT"
+        echo "score=$(jq -r '.score // ""' mobilegate-report.json)" >> "$GITHUB_OUTPUT"
+
+        "$BIN" -markdown "${args[@]}" "$APK_PATH" > mobilegate-report.md || true
+
+    - name: Post or update PR comment
+      if: ${{ inputs.comment-on-pr == 'true' }}
+      uses: actions/github-script@v7
+      env:
+        MOBILEGATE_REPORT_MD: ${{ github.workspace }}/mobilegate-report.md
+        MOBILEGATE_COMMENT_MARKER: ${{ inputs.comment-marker }}
+        MOBILEGATE_FAIL_ON_ERROR: ${{ inputs.fail-on-comment-error }}
+      with:
+        script: |
+          const fs = require('fs');
+
+          if (!context.payload.pull_request) {
+            core.info('Not a pull_request event — skipping PR comment.');
+            return;
+          }
+
+          const marker = `<!-- mobilegate-report:${process.env.MOBILEGATE_COMMENT_MARKER} -->`;
+          const failLoudly = process.env.MOBILEGATE_FAIL_ON_ERROR === 'true';
+
+          let reportBody;
+          try {
+            reportBody = fs.readFileSync(process.env.MOBILEGATE_REPORT_MD, 'utf8');
+          } catch (err) {
+            const msg = `Could not read the MobileGate Markdown report at ${process.env.MOBILEGATE_REPORT_MD}: ${err.message}`;
+            if (failLoudly) { core.setFailed(msg); } else { core.warning(msg); }
+            return;
+          }
+
+          const body = `${reportBody}\n\n${marker}\n`;
+          const { owner, repo } = context.repo;
+          const issue_number = context.payload.pull_request.number;
+
+          try {
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+              core.info(`Updated existing MobileGate PR comment (id ${existing.id}).`);
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+              core.info('Created MobileGate PR comment.');
+            }
+          } catch (err) {
+            const msg = `Failed to post/update the PR comment (${err.status || 'error'}: ${err.message}). ` +
+              `This almost always means the workflow's token lacks 'pull-requests: write' — ` +
+              `add "permissions:\\n  pull-requests: write" to the job or workflow. ` +
+              `See the README's action-permissions section.`;
+            if (failLoudly) { core.setFailed(msg); } else { core.warning(msg); }
+          }
+
+    - name: Reflect scan result
+      shell: bash
+      env:
+        EXIT_CODE: ${{ steps.scan.outputs.exit-code }}
+        GATE_DECISION: ${{ steps.scan.outputs.gate-decision }}
+      run: |
+        if [ "$EXIT_CODE" != "0" ]; then
+          echo "::error::MobileGate: RELEASE STATUS $GATE_DECISION — see the job log / PR comment above for the failed controls."
+        fi
+        exit "$EXIT_CODE"

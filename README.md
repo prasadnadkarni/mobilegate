@@ -332,23 +332,133 @@ Then set `policy.mode: baseline` in `.mobilegate.yml` (or pass
 `-baseline .mobilegate-baseline.yml` on the command line) so future
 scans only block on regressions.
 
-**Wire into CI** (GitHub Actions example):
+## GitHub Action
+
+`prasadnadkarni/mobilegate@v0.1.0` is a composite action: it downloads
+the pinned release binary (checksum-verified, no build step, no Go
+toolchain needed on your runner), runs it against an APK, fails the
+workflow on `BLOCKED`, and posts or updates a PR comment with the
+Markdown report.
+
+The realistic case — the APK is a build artifact from an earlier step
+in the *same job*, not a file committed to the repo:
 
 ```yaml
-- name: MobileGate release gate
-  run: |
-    ./mobilegate app-release.apk
+name: MobileGate release gate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write   # required to post/update the PR comment — see "Permissions" below
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Build release APK
+        run: ./gradlew assembleRelease
+
+      - uses: prasadnadkarni/mobilegate@v0.1.0
+        with:
+          apk-path: app/build/outputs/apk/release/app-release-unsigned.apk
+          # config-path: .mobilegate.yml        # optional, this is already the default
+          # baseline-path: .mobilegate-baseline.yml  # optional — omit to let policy.mode in .mobilegate.yml decide
 ```
 
-The command's exit code alone fails the step on `BLOCKED`. To also post
-a PR comment, capture the Markdown output and feed it to whatever
-comment-posting action your CI platform provides:
+If the APK is built in a **different job** (a separate build job feeding
+a separate gate job), it has to cross the job boundary explicitly —
+each job is a clean filesystem:
 
 ```yaml
-- name: MobileGate release gate
-  run: ./mobilegate -markdown app-release.apk > mobilegate-comment.md
-  # then hand mobilegate-comment.md to your PR-comment action of choice
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./gradlew assembleRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-apk
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+
+  gate:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-apk
+      - uses: prasadnadkarni/mobilegate@v0.1.0
+        with:
+          apk-path: app-release-unsigned.apk
 ```
+
+### Inputs
+
+| Input | Required | Default | Notes |
+|---|---|---|---|
+| `apk-path` | yes | — | Fails the action immediately (before downloading anything) if the file doesn't exist. |
+| `config-path` | no | *(unset — MobileGate's own default, `.mobilegate.yml`)* | |
+| `baseline-path` | no | *(unset — mode/path come from `.mobilegate.yml`'s `policy.mode`)* | Setting this alone also switches to baseline mode, same shorthand as the CLI's `-baseline` flag. |
+| `version` | no | `latest` | Pin an exact tag (`v0.1.0`) for a reproducible pipeline — `latest` can change under you between runs. |
+| `comment-on-pr` | no | `true` | No-op (not an error) on any event that isn't a pull request. |
+| `comment-marker` | no | `default` | Change only if one workflow scans multiple APKs and needs a separate comment per APK. |
+| `fail-on-comment-error` | no | `true` | See "Permissions" below. |
+| `github-token` | no | `${{ github.token }}` | |
+
+### Outputs
+
+`gate-decision` (`pass`/`blocked`) and `score`, for a downstream step
+that wants to branch on the result beyond the action's own exit code.
+
+### Exit code and the PR comment: order of operations
+
+A `BLOCKED` result must still get its PR comment posted — that's the
+whole point, that's when the comment matters most. The action runs the
+scan, posts/updates the comment regardless of the result, and *only
+then* exits with the scan's real exit code as its last step. A workflow
+step failure from `BLOCKED` always shows up after the comment step has
+had its chance to run, never instead of it.
+
+### Sticky comment, not a stack
+
+Every comment the action posts carries a hidden marker
+(`<!-- mobilegate-report:default -->` by default). On each run, the
+action lists existing PR comments, and if one already carries that
+marker, it's **updated in place** — re-running the workflow (a new
+commit, a manual re-run) never produces a second comment.
+
+### Permissions
+
+Posting or updating the PR comment needs **`pull-requests: write`** on
+the token the workflow gives the action. Many orgs now default
+`GITHUB_TOKEN` to read-only, in which case you need the explicit block
+shown in the examples above:
+
+```yaml
+permissions:
+  pull-requests: write
+```
+
+**What happens if that permission is missing:** the action does **not**
+silently skip the comment and report success. `fail-on-comment-error`
+defaults to `true` — a permissions failure posting the comment fails
+the action with a message telling you exactly what to add, even if the
+scan itself was a clean `PASS`. Set `fail-on-comment-error: false` only
+if you'd rather the scan result alone govern the action's outcome and
+you're fine with comments silently not appearing when permissions are
+wrong — that's an explicit opt-out, not the default, on purpose.
 
 ## Development
 
@@ -356,7 +466,13 @@ comment-posting action your CI platform provides:
 make test              # unit + fixture suites (go test ./...)
 make fetch-testdata     # pulls the two pinned dev-verification APKs
 make oracle             # cross-checks parsers against aapt2/apkanalyzer/dexdump (requires Android SDK cmdline-tools)
+goreleaser build --snapshot --clean   # verify cross-compilation locally without tagging a release (requires goreleaser)
 ```
+
+`.github/workflows/ci.yml` runs the same build/vet/test/goreleaser-build
+checks on every push and PR. `.github/workflows/release.yml` runs
+`goreleaser release` on a pushed `v*` tag — that's what publishes the
+binaries `action.yml` fetches; see `.goreleaser.yml`.
 
 See `CLAUDE.md` for the project's hard constraints (Go-only, no
 shelling out to JVM tooling, synthetic-fixtures-only, etc.) and

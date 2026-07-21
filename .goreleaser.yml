@@ -1,0 +1,71 @@
+# goreleaser config — see https://goreleaser.com/customization/
+#
+# Produces cross-compiled, checksummed release binaries attached to a
+# GitHub release, so cmd/mobilegate/action.yml (the GitHub Action
+# wrapper) can fetch a pinned version instead of building from source
+# on every workflow run — a source build would need a Go toolchain on
+# every consumer's runner, which is exactly the "no runtime to install"
+# promise this project exists to keep (CLAUDE.md: "single static
+# binary... fast startup").
+version: 2
+
+project_name: mobilegate
+
+builds:
+  - id: mobilegate
+    main: ./cmd/mobilegate
+    binary: mobilegate
+    env:
+      - CGO_ENABLED=0 # static binary — no libc dependency on the runner, matches the project's own hard constraint
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.scannerVersion={{.Version}}
+
+archives:
+  - id: mobilegate
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    # {{.ProjectName}}_{{.Os}}_{{.Arch}} — action.yml's OS/arch
+    # resolution step builds this exact name; changing this template
+    # requires updating that step too.
+    name_template: >-
+      {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+# No signing configured yet (cosign/GPG) — a real gap for a security
+# tool's own release artifacts, not an oversight being glossed over.
+# action.yml verifies the downloaded archive against checksums.txt,
+# which protects against transport corruption and a compromised CDN
+# mirror, but not against a compromised release process itself (a
+# signature would). Revisit if/when this project has a real release
+# key management story, not as a first-release afterthought.
+
+release:
+  github:
+    owner: prasadnadkarni
+    name: mobilegate
+  # goreleaser's default changelog (commit list since the last tag) is
+  # fine for now — this project's commit messages already explain the
+  # "why," not just the "what" (see CONTRIBUTING.md's commit-message
+  # guidance), so the raw list is more informative than most projects'.
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

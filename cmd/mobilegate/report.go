@@ -311,19 +311,29 @@ func printDebugJSON(m *manifest.Manifest, results []dexFileResult, mg001Findings
 
 // scannerVersion/ruleVersion are this build's own identity, reported in
 // the JSON contract so a consumer can tell which detection logic
-// produced a given result. No real release-versioning process exists
-// yet (pre-1.0, single-developer build) — bump these by hand when rule
-// logic changes meaningfully, the same discipline PERFORMANCE.md's
-// table already asks for on the performance side. ruleVersion is also
-// what a baseline file records and compares against on load — see
-// core.LoadBaseline and runGate's staleness check.
+// produced a given result. ruleVersion is bumped by hand when rule
+// logic changes meaningfully (same discipline PERFORMANCE.md's table
+// already asks for on the performance side) and is also what a
+// baseline file records and compares against on load — see
+// core.LoadBaseline and runGate's staleness check. ruleVersion is
+// content-versioning for the rule set, independent of the software
+// release tag, so it stays a hardcoded const, not something a build
+// injects.
+//
+// scannerVersion IS injected at build time — see the var below.
 //
 // policy_mode's two string values are config.ModeStrict/ModeBaseline —
 // not redeclared here, so there's exactly one place that spells them.
-const (
-	scannerVersion = "0.1.0"
-	ruleVersion    = "2026.07.1"
-)
+const ruleVersion = "2026.07.1"
+
+// scannerVersion defaults to a dev marker for a plain `go build` (make
+// build, local development), and is overridden by goreleaser's release
+// build via -ldflags "-X main.scannerVersion=vX.Y.Z" — see
+// .goreleaser.yml. Must be a var, not a const: -X only works on
+// package-level string vars. `mobilegate version` prints this, so CI
+// (and a human) can confirm which binary a download actually is before
+// trusting its output.
+var scannerVersion = "0.0.0-dev"
 
 // contractReport is the spec's output contract: scanner_version,
 // rule_version, artifact_type, platform, gate_decision, policy_mode,

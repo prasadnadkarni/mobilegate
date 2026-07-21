@@ -1,0 +1,66 @@
+name: CI
+
+# Build/vet/test on every push and PR — so a break surfaces here, not
+# at release time when .github/workflows/release.yml runs goreleaser
+# against a tag. The oracle suite (tools/oracle, `make oracle`) is
+# deliberately NOT run here: it needs Android SDK cmdline-tools/
+# build-tools on the runner and real APK fixtures fetched from
+# f-droid.org, which is development-time-only verification per its own
+# doc comment (tools/oracle/README.md) — not a CI-appropriate
+# dependency for every push.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          diff=$(gofmt -l .)
+          if [ -n "$diff" ]; then
+            echo "gofmt would reformat these files:"
+            echo "$diff"
+            exit 1
+          fi
+
+      - name: go vet
+        run: |
+          go vet ./...
+          go vet -tags oracle ./...
+
+      - name: go build
+        run: |
+          go build ./...
+          go build -tags oracle ./...
+
+      - name: go test
+        run: go test ./...
+
+  goreleaser-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: build --snapshot --clean
