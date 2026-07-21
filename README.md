@@ -1,5 +1,10 @@
 # MobileGate
 
+[![CI](https://github.com/prasadnadkarni/mobilegate/actions/workflows/ci.yml/badge.svg)](https://github.com/prasadnadkarni/mobilegate/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/prasadnadkarni/mobilegate.svg)](https://pkg.go.dev/github.com/prasadnadkarni/mobilegate)
+[![Release](https://img.shields.io/github/v/release/prasadnadkarni/mobilegate)](https://github.com/prasadnadkarni/mobilegate/releases)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+
 An Android APK release gate for CI/CD. It answers one question — **PASS**
 or **BLOCKED** — and lists the specific controls that failed. It is not
 a findings report, and it does not try to be comprehensive.
