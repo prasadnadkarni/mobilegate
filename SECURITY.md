@@ -28,17 +28,26 @@ Please include the following information:
 
 ## Scope
 
-The following vulnerability categories are considered **in scope**:
+MobileGate parses untrusted, potentially adversarial binary input. The
+following are in scope:
 
-- Authentication and authorization issues
-- Injection vulnerabilities (SQL injection, command injection, etc.)
-- Sensitive data exposure
-- Security misconfigurations
+- Memory-safety or resource-exhaustion issues triggered by a crafted APK
+  (unbounded allocation, decompression bombs, hangs, panics in the ZIP,
+  DEX, ARSC, binary-XML, or MUTF-8 parsers)
+- Bypasses that cause a genuinely failing APK to be reported as PASS —
+  e.g. hiding a credential where the scanner does not look, or crafting
+  a config/baseline file that suppresses a finding it should not
+- Path traversal or arbitrary file write via crafted archive entries
+- Secrets or local filesystem paths leaking into JSON, SARIF, or
+  Markdown output
+- Vulnerabilities in the GitHub Action wrapper (command injection via
+  inputs, token exposure in logs)
 
 ## Out of Scope
 
-The following are **not** considered part of this security policy:
-
-- Vulnerabilities in third-party dependencies already tracked by Dependabot or the upstream project
-- Social engineering attacks
-- Denial-of-service (DoS/DDoS) attacks
+- False positives, and known detection gaps documented in DESIGN.md
+  (no DEX bytecode analysis, no `lib/*.so` parsing, Android only) —
+  these are documented architectural limits, not vulnerabilities
+- Vulnerabilities in third-party dependencies already tracked upstream
+- Social engineering
+- Network-level DoS against GitHub or other infrastructure
