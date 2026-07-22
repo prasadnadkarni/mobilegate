@@ -25,25 +25,55 @@ This is not a MobSF clone. MobSF says "here are 150 findings." This says "your r
 
 The parser is an implementation detail, not the moat. The moat is the rules, evidence model, and confidence engine. Do not reimplement apktool.
 
-- APK container → stdlib `archive/zip`
-- Binary AndroidManifest.xml + resources.arsc → maintained library, thin wrapper
-- DEX string extraction → minimal custom parser (~150 LOC): read header, seek `string_ids`, read MUTF-8 string table. No decompilation to Smali. Do not let this grow into a decompiler.
+- APK container → stdlib `archive/zip`.
+- Binary AndroidManifest.xml structural fields (`exported`, `permission`, `allowBackup`, intent-filter actions/categories, etc.) → `pkg/parser/manifest`, a thin wrapper over the maintained `github.com/shogo82148/androidbinary` library's own XML-decode engine, with custom Go struct tags selecting which fields to pull out. This is the one case that actually looks like the original "maintained library, thin wrapper" plan.
+- `resources.arsc` / `AndroidManifest.xml` string-pool enumeration → `pkg/parser/arsc`, hand-rolled. `androidbinary`'s `TableFile` has no public way to enumerate the string pool at all — confirmed via `go doc` before writing any custom code, not assumed. MG-001's secret-scanning signal needs every string in the pool, not just resolved attribute values, which the library doesn't expose.
+- `network_security_config.xml` → `pkg/parser/nsc`, hand-rolled. `androidbinary`'s `XMLFile` silently drops CDATA text (`RES_XML_CDATA_TYPE` is declared but never handled in its chunk-type switch) — confirmed empirically (decoding a real config through it dropped the actual domain name, not just inferred from reading the source) before writing a replacement.
+- DEX string extraction → `pkg/parser/dex`, hand-rolled: header → `string_ids` → MUTF-8 table, plus enough class/method/field structure to attribute a string to its declaring type. No decompilation to Smali. Do not let this grow into a decompiler.
+
+**The standard for writing a custom parser instead of using a library: a demonstrated, verified gap in the maintained library, plus an oracle once it's written** — not "the library looked complicated" or "our own would be cleaner." Verify the gap with `go doc` and/or a real decoded APK before writing any replacement code, the way `pkg/parser/arsc` and `pkg/parser/nsc`'s own package doc comments record. See "Constraints established since initial build" below for the oracle requirement.
 
 ## Definition of done for any rule
 
 Positive fixture detects it **AND** every negative fixture stays clean. Both, or it ships as a warning instead of a blocker.
 
-## Build order — do not skip ahead
+## Current state (as of v0.4.3)
 
-1. Parser: unzip + manifest parse + DEX string extractor, verified against a real APK
-2. MG-001 (secrets) with multi-signal evidence + exclusion zones
-3. Scoring + gate decision + finding_hash + JSON/terminal output
-4. Negative-fixture suite green — this is the acceptance gate
-5. Baseline mode + PR-comment Markdown formatter
-6. Only then: promote MG-004 if it passes negatives, add warning-tier rules
+The build-order plan this file used to carry is finished. This section
+describes what actually exists, so a new session extends it correctly
+instead of re-deriving or re-litigating decisions already made.
 
-Finish and test each step before starting the next. Do not write MG-001, MG-002, and MG-003 in one pass before any of them has fixtures.
+**Five rules, wired into the CLI:**
+
+- **MG-001** (hardcoded secrets) — blocking.
+- **MG-002** (cleartext/accept-all transport) — blocking.
+- **MG-003** (plaintext sensitive storage / backup exposure) — blocking (one signal is warning-tier; see `rules/MG-003-plaintext-storage.yaml`).
+- **MG-004** (exported Android component without permission protection) — **warning-tier**. It passed its own negative-fixture suite with zero false positives — the same technical bar every blocking rule clears — and was deliberately NOT promoted anyway: a 12-app real corpus found every app firing, and a follow-up investigation into the narrowest defensible blocking subset (first-party service/provider findings only) still narrowed to roughly 3-5 real findings concentrated in a single app. **This is a settled decision, not an outstanding to-do.** Full reasoning is in `DESIGN.md`'s "MG-004: why it isn't blocking" and in `rules/MG-004-exported-component.yaml`'s own header. Do not read the warning-tier status as unfinished work, and do not promote it on the reasoning "it passed the fixture suite so it should be blocking" — that reasoning was already considered and rejected. Revisiting it needs a genuinely new input (e.g. a materially wider corpus with different results), not a re-read of the same 12 apps.
+- **MG-010** (debug/test build artifact) — blocking.
+
+`MG-005` through `MG-009` are the spec's remaining catalog entries —
+considered and deliberately deferred, not unbuilt oversights. See
+`DESIGN.md`'s "Rules considered and not built" for the specific reason
+each one was scoped out.
+
+**Also shipped, end to end:**
+
+- **Baseline mode** (`-baseline`, `mobilegate baseline -write`) — grandfathers pre-existing findings, blocks only on regressions.
+- **SARIF 2.1.0 output** (`-sarif`) — see "Constraints established since initial build" below for what it deliberately does and doesn't do.
+- **GitHub Action** (`action.yml`) — composite action: downloads a pinned, checksum-verified release binary, posts/updates a PR comment, optional SARIF upload.
+- **Four distribution paths**: Homebrew tap (`prasadnadkarni/tap/mobilegate`), Docker (`ghcr.io/prasadnadkarni/mobilegate`, multi-arch amd64/arm64), goreleaser release binaries (what the Action fetches), and `go install` (works, but unversioned — documented as such, not a full parity path).
+- **`.mobilegate.yml` policy config** — mode (strict/baseline), baseline file path, first-party domain/package allowlists, rule suppression with mandatory reasons.
+- **`golangci-lint` in CI** (the default five linters plus `gosec`, pinned version) and **parser oracles** for manifest/DEX/ARSC/NSC — see the constraint below.
+
+## Constraints established since initial build
+
+These weren't known or decided when the rest of this file was written.
+Treat them as binding, same as "Hard constraints" above.
+
+- **SARIF omits suppressed/baselined findings instead of emitting `results[].suppressions`.** Confirmed against GitHub's own docs (and a May 2025 GitHub-staff reply on a public discussion) that GitHub's SARIF ingestion does not honor `suppressions[]` — a suppressed finding uploaded there would show as a normal, active, open alert, not as suppressed. Emitting it anyway would ship something that looks like it works but silently doesn't. Suppressed/baselined findings stay fully visible, with their reason, in every OTHER output format (terminal, `-json`, `-markdown`) — this is SARIF-specific. See `DESIGN.md`'s SARIF section.
+- **Every hand-rolled parser needs an oracle, or a documented reason it doesn't have one.** `pkg/parser/manifest`, `pkg/parser/dex`, `pkg/parser/arsc`, and `pkg/parser/nsc` each have a corresponding `tools/oracle/*_test.go` cross-checking against independent, from-scratch Android tooling (`aapt2`, `apkanalyzer`, `dexdump`) on a real APK, and each has been mutation-tested (a bug deliberately introduced, confirmed the oracle catches it with a precise diff, reverted). `pkg/parser/backuprules` is the one exception, and it's a documented one, not an oversight — verified via synthetic binary-XML unit tests plus manual cross-checking against `aapt2 dump xmltree` during development, noted explicitly in `DESIGN.md` rather than left to look covered. A new hand-rolled parser with neither an oracle nor an equivalent documented reason is not done.
+- **`release.yml` gates on doc version pins matching the tag being released.** Every `prasadnadkarni/mobilegate@vX.Y.Z` reference in `README.md`/`CONTRIBUTING.md` is hand-written prose, not generated from the tag — a stale one slipped through three times before this was automated. The release now fails outright, before goreleaser runs anything, if any reference doesn't match the tag just pushed. See `CONTRIBUTING.md`'s "Cutting a release."
 
 ## Scope discipline
 
-If a change isn't in the current build-order step, don't make it. Ask first. Common drift to resist: adding iOS scaffolding, adding a fourth blocking rule, adding config options not in the spec, building a web dashboard.
+If a change isn't part of what you're actually doing, don't make it — ask first. Common drift to resist: adding iOS scaffolding, promoting MG-004 to blocking without a genuinely new reason (see "Current state" above — this was already investigated and settled), adding config options not reflected in `.mobilegate.yml`'s documented schema, building a web dashboard.
