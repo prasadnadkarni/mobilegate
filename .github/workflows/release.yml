@@ -25,6 +25,48 @@ jobs:
         with:
           fetch-depth: 0 # goreleaser needs full history to generate the changelog between tags
 
+      # A stale `prasadnadkarni/mobilegate@vX.Y.Z` pin in README.md or
+      # CONTRIBUTING.md has slipped through three times: it's
+      # hand-written prose, not generated from the tag, so nothing else
+      # in this pipeline notices when it's wrong — the release still
+      # succeeds, CI still passes, and it just quietly hands new
+      # adopters an older action version than the one being documented
+      # right below it. This fails the release outright instead, before
+      # goreleaser does anything, rather than relying on remembering to
+      # grep first (see CONTRIBUTING.md's "Cutting a release").
+      - name: Verify README/CONTRIBUTING action pins match this tag
+        run: |
+          tag="${{ github.ref_name }}"
+          found_any=0
+          mismatches=""
+
+          for f in README.md CONTRIBUTING.md; do
+            refs=$(grep -oE 'prasadnadkarni/mobilegate@v[0-9]+\.[0-9]+\.[0-9]+' "$f" | sort -u || true)
+            for ref in $refs; do
+              found_any=1
+              ref_version="${ref##*@}"
+              if [ "$ref_version" != "$tag" ]; then
+                mismatches="${mismatches}
+            $f: $ref (expected @$tag)"
+              fi
+            done
+          done
+
+          # Belt and braces: if the reference pattern itself ever breaks
+          # (e.g. the format changes and this regex stops matching), fail
+          # loudly rather than silently passing with zero checks done.
+          if [ "$found_any" -eq 0 ]; then
+            echo "::error::found zero 'prasadnadkarni/mobilegate@v...' references in README.md/CONTRIBUTING.md — the check pattern itself may be broken, not just the pins. Fix the check before trusting it."
+            exit 1
+          fi
+
+          if [ -n "$mismatches" ]; then
+            echo "::error::stale action version pin(s) — bump these to @$tag before tagging a release:$mismatches"
+            exit 1
+          fi
+
+          echo "All action pins in README.md/CONTRIBUTING.md match $tag"
+
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod

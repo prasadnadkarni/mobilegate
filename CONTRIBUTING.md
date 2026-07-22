@@ -96,23 +96,33 @@ go test ./...
 Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs
 goreleaser: cross-compiled binaries, the Homebrew tap
 (`prasadnadkarni/homebrew-tap`), and the multi-arch `ghcr.io` image all
-update automatically from `.goreleaser.yml`. **The README's pinned
-`prasadnadkarni/mobilegate@vX.Y.Z` references do not** — every
-`uses: prasadnadkarni/mobilegate@v0.4.0` line (and the `version` input's
-example, and the inputs table's example) is hand-written prose, not
-generated from the tag. Bump all of them to the new version as part of
-the same change that tags the release, not after.
+update automatically from `.goreleaser.yml`. **The README's and this
+file's pinned `prasadnadkarni/mobilegate@vX.Y.Z` references do not** —
+every `uses: prasadnadkarni/mobilegate@vX.Y.Z` line (and the `version`
+input's example, and the inputs table's example) is hand-written prose,
+not generated from the tag.
 
-This is easy to miss and fails silently: an unbumped README doesn't
-break the release, doesn't fail CI, and doesn't error for anyone who
-copies the example — it just quietly hands new adopters an older
-action version than the one actually being documented right below it
-(e.g. the SARIF section documents `sarif-file`, which didn't exist in
-early tags; someone who copies a stale `@v0.1.0` from higher up the
-page gets a working but confusingly incomplete setup, with no error to
-point at the mismatch). `grep -n "mobilegate@v0" README.md` before
-tagging to catch every occurrence — there were six as of this writing,
-not the four that seem obvious from skimming the Action examples alone.
+This slipped through three times before it was worth automating: an
+unbumped reference doesn't break the release, doesn't fail a normal CI
+run, and doesn't error for anyone who copies the example — it just
+quietly hands new adopters an older action version than the one
+actually being documented right below it (e.g. the SARIF section
+documents `sarif-file`, which didn't exist in early tags; someone who
+copies a stale pin from higher up the page gets a working but
+confusingly incomplete setup, with no error to point at the mismatch).
+Relying on remembering to grep before tagging is what failed three
+times, so it isn't the mechanism anymore.
+
+**`release.yml` now enforces this itself, before goreleaser runs.** A
+"Verify README/CONTRIBUTING action pins" step extracts every
+`prasadnadkarni/mobilegate@vX.Y.Z` reference from `README.md` and
+`CONTRIBUTING.md` and fails the release outright if any doesn't match
+the tag that was just pushed — including a self-check that it found at
+least one reference at all, so a change to the reference format itself
+can't silently disable the check. Bump the references as part of the
+same commit you're about to tag (not after); if you forget, the release
+fails immediately with the exact file and line to fix, rather than
+publishing successfully with a stale README.
 
 ## Scope discipline
 
