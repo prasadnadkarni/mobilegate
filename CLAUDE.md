@@ -2,7 +2,13 @@
 
 An Android APK release gate for CI/CD. Emits PASS or BLOCKED, not a findings report.
 
-**Full spec: `./mobile-security-release-gate-build-prompt-v2.1.md` — read it before doing any work in this repo.**
+**This file and `DESIGN.md` are the authoritative description of the
+project — read them before doing any work here.**
+`./mobile-security-release-gate-build-prompt-v2.1.md` is the original
+pre-implementation spec, kept unmodified as historical context (it now
+carries its own header explaining exactly where it and reality
+diverged) — not current instructions, and not a substitute for this
+file or `DESIGN.md`.
 
 ## Product thesis (do not drift from this)
 

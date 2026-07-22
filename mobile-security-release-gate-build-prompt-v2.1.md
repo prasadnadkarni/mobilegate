@@ -1,3 +1,62 @@
+> ## ⚠️ Historical artifact — not current instructions
+>
+> This is the original pre-implementation spec, unmodified since before
+> any code existed. It is kept as-is deliberately — the gap between what
+> this document asked for and what actually shipped is itself useful
+> information, and editing the spec to match reality would destroy that.
+>
+> **It is not authoritative and must not be treated as current
+> instructions.** `CLAUDE.md` and `DESIGN.md` describe what the project
+> actually is today; read those first, and treat anything here that
+> conflicts with them as superseded. Specifically, this document gets
+> the following wrong:
+>
+> - **Recommends `github.com/appflight/apkparser`** (under "Binary
+>   `AndroidManifest.xml` + `resources.arsc`") for manifest/ARSC
+>   parsing. That library is a 5-year-stale, 2-star fork. The project
+>   uses `github.com/shogo82148/androidbinary` for manifest parsing,
+>   plus hand-rolled `pkg/parser/arsc` and `pkg/parser/nsc` for the
+>   specific things that library doesn't do — see `CLAUDE.md`'s Parser
+>   strategy section.
+> - **Says to promote MG-004 to blocking once it passes the negative
+>   suite** ("Build order," step 6). It passed. It was deliberately
+>   kept warning-tier anyway — see `DESIGN.md`'s "MG-004: why it isn't
+>   blocking" and `rules/MG-004-exported-component.yaml`. Do not treat
+>   this line as an outstanding instruction.
+> - **MG-002's accept-all `TrustManager`/`HostnameVerifier` signal and
+>   all three of MG-003's originally-specified signals**
+>   (`MODE_WORLD_READABLE`/`WRITEABLE`, external-storage writes,
+>   disabled storage encryption) **are bytecode-gated and unreachable**
+>   by this project's string-pool-only DEX parser — none of them were
+>   ever built as specified. Both rules were redefined around what's
+>   actually detectable: MG-002 blocks on manifest/network-security-config
+>   cleartext configuration, MG-003 on `android:allowBackup`. See
+>   `CLAUDE.md`'s "No DEX bytecode analysis" list and `DESIGN.md`'s
+>   "Scope limits" section.
+> - **Says "three blocking rules in v1."** Four shipped: MG-001,
+>   MG-002, MG-003, MG-010. MG-010 (debug/test build artifact) isn't in
+>   this document's rule catalog at all — it was split out of MG-003
+>   during implementation as its own rule with its own threat model.
+> - **Describes a `policy.new_findings_only` config key.** That key was
+>   never implemented — it's redundant with `policy.mode: baseline`,
+>   which already does unconditionally what it would have done. The
+>   real config is `policy.mode` + `policy.baseline_file` — see
+>   `README.md`'s "Policy: `.mobilegate.yml`" section.
+> - **The "Deliverable structure" section's `/internal/report` and
+>   `/testdata/positive`/`/testdata/negative` don't exist as
+>   described.** JSON/terminal/Markdown formatting lives in
+>   `cmd/mobilegate/report.go` and `markdown.go`, not a separate
+>   `internal/report` package. Positive/negative fixtures are
+>   constructed in-memory in Go test code (e.g.
+>   `internal/engine/mg001_fixtures_test.go`), not stored as planted-issue
+>   synthetic APK files under `/testdata`; `testdata/real/` holds
+>   real, on-demand-fetched F-Droid APKs for oracle/corpus verification,
+>   a different purpose than what this document describes.
+>
+> The rest of this document is left exactly as originally written below.
+
+---
+
 # Build Prompt: Mobile App Security Release Gate — v2.1 (Android-only MVP)
 
 Paste this into Claude Code as the initial spec. This is the final spec before implementation — do not keep refining it, build it. Scope is deliberately narrow and the precision bar is deliberately high. Do not re-expand scope.
