@@ -31,7 +31,7 @@ Failed controls:
 runner, a pinned/checksum-verified release binary fetched at run time:
 
 ```yaml
-- uses: prasadnadkarni/mobilegate@v0.4.2
+- uses: prasadnadkarni/mobilegate@v0.4.3
   with:
     apk-path: app/build/outputs/apk/release/app-release-unsigned.apk
 ```
@@ -193,7 +193,7 @@ exact-package matching was rejected in favor of it are in
 
 ## GitHub Action
 
-`prasadnadkarni/mobilegate@v0.4.2` is a composite action: it downloads
+`prasadnadkarni/mobilegate@v0.4.3` is a composite action: it downloads
 the pinned release binary (checksum-verified, no build step, no Go
 toolchain needed on your runner), runs it against an APK, fails the
 workflow on `BLOCKED`, and posts or updates a PR comment with the
@@ -226,7 +226,7 @@ jobs:
       - name: Build release APK
         run: ./gradlew assembleRelease
 
-      - uses: prasadnadkarni/mobilegate@v0.4.2
+      - uses: prasadnadkarni/mobilegate@v0.4.3
         with:
           apk-path: app/build/outputs/apk/release/app-release-unsigned.apk
           # config-path: .mobilegate.yml        # optional, this is already the default
@@ -258,7 +258,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: release-apk
-      - uses: prasadnadkarni/mobilegate@v0.4.2
+      - uses: prasadnadkarni/mobilegate@v0.4.3
         with:
           apk-path: app-release-unsigned.apk
 ```
@@ -320,7 +320,7 @@ permissions:
   security-events: write   # required for the SARIF upload
 
 steps:
-  - uses: prasadnadkarni/mobilegate@v0.4.2
+  - uses: prasadnadkarni/mobilegate@v0.4.3
     with:
       apk-path: app/build/outputs/apk/release/app-release-unsigned.apk
       sarif-file: mobilegate.sarif
