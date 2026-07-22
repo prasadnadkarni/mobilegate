@@ -33,7 +33,7 @@ product.
    writing the detection logic. The negative fixtures are the actual
    spec.
 3. Document what the signal does *not* cover in the rule's own YAML
-   header, in the same style as the existing four rules. A rule with no
+   header, in the same style as the existing five rules. A rule with no
    documented scope boundary reads as "we didn't think about this,"
    even when the boundary was in fact considered.
 
@@ -90,6 +90,29 @@ go build ./... && go build -tags oracle ./...
 go vet ./... && go vet -tags oracle ./...
 go test ./...
 ```
+
+## Cutting a release
+
+Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs
+goreleaser: cross-compiled binaries, the Homebrew tap
+(`prasadnadkarni/homebrew-tap`), and the multi-arch `ghcr.io` image all
+update automatically from `.goreleaser.yml`. **The README's pinned
+`prasadnadkarni/mobilegate@vX.Y.Z` references do not** — every
+`uses: prasadnadkarni/mobilegate@v0.4.0` line (and the `version` input's
+example, and the inputs table's example) is hand-written prose, not
+generated from the tag. Bump all of them to the new version as part of
+the same change that tags the release, not after.
+
+This is easy to miss and fails silently: an unbumped README doesn't
+break the release, doesn't fail CI, and doesn't error for anyone who
+copies the example — it just quietly hands new adopters an older
+action version than the one actually being documented right below it
+(e.g. the SARIF section documents `sarif-file`, which didn't exist in
+early tags; someone who copies a stale `@v0.1.0` from higher up the
+page gets a working but confusingly incomplete setup, with no error to
+point at the mismatch). `grep -n "mobilegate@v0" README.md` before
+tagging to catch every occurrence — there were six as of this writing,
+not the four that seem obvious from skimming the Action examples alone.
 
 ## Scope discipline
 

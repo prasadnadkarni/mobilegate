@@ -31,7 +31,7 @@ Failed controls:
 runner, a pinned/checksum-verified release binary fetched at run time:
 
 ```yaml
-- uses: prasadnadkarni/mobilegate@v0.1.0
+- uses: prasadnadkarni/mobilegate@v0.4.0
   with:
     apk-path: app/build/outputs/apk/release/app-release-unsigned.apk
 ```
@@ -97,8 +97,10 @@ cd mobilegate
 go build -o mobilegate ./cmd/mobilegate
 ```
 
-Requires Go 1.26+. No other runtime dependency — the built binary is
-static and self-contained.
+Requires Go 1.26.2+ (go.mod's `go` directive is a hard minimum — an
+older toolchain will refuse to build or auto-switch, not silently
+compile against something else). No other runtime dependency — the
+built binary is static and self-contained.
 
 **Scan an APK:**
 
@@ -128,7 +130,7 @@ for the full mechanism and a worked example.
 
 ## The rules
 
-Four rules exist today. Each rule requires multiple corroborating
+Five rules exist today. Each rule requires multiple corroborating
 signals before it fires — no rule blocks on a single weak signal.
 
 | Rule | Detects | Blocking tier |
@@ -191,7 +193,7 @@ exact-package matching was rejected in favor of it are in
 
 ## GitHub Action
 
-`prasadnadkarni/mobilegate@v0.1.0` is a composite action: it downloads
+`prasadnadkarni/mobilegate@v0.4.0` is a composite action: it downloads
 the pinned release binary (checksum-verified, no build step, no Go
 toolchain needed on your runner), runs it against an APK, fails the
 workflow on `BLOCKED`, and posts or updates a PR comment with the
@@ -224,7 +226,7 @@ jobs:
       - name: Build release APK
         run: ./gradlew assembleRelease
 
-      - uses: prasadnadkarni/mobilegate@v0.1.0
+      - uses: prasadnadkarni/mobilegate@v0.4.0
         with:
           apk-path: app/build/outputs/apk/release/app-release-unsigned.apk
           # config-path: .mobilegate.yml        # optional, this is already the default
@@ -256,7 +258,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: release-apk
-      - uses: prasadnadkarni/mobilegate@v0.1.0
+      - uses: prasadnadkarni/mobilegate@v0.4.0
         with:
           apk-path: app-release-unsigned.apk
 ```
@@ -268,7 +270,7 @@ jobs:
 | `apk-path` | yes | — | Fails the action immediately (before downloading anything) if the file doesn't exist. |
 | `config-path` | no | *(unset — MobileGate's own default, `.mobilegate.yml`)* | |
 | `baseline-path` | no | *(unset — mode/path come from `.mobilegate.yml`'s `policy.mode`)* | Setting this alone also switches to baseline mode, same shorthand as the CLI's `-baseline` flag. |
-| `version` | no | `latest` | Pin an exact tag (`v0.1.0`) for a reproducible pipeline — `latest` can change under you between runs. |
+| `version` | no | `latest` | Pin an exact tag (`v0.4.0`) for a reproducible pipeline — `latest` can change under you between runs. |
 | `comment-on-pr` | no | `true` | No-op (not an error) on any event that isn't a pull request. |
 | `comment-marker` | no | `default` | Change only if one workflow scans multiple APKs and needs a separate comment per APK. |
 | `fail-on-comment-error` | no | `true` | See "Permissions" below. |
@@ -318,7 +320,7 @@ permissions:
   security-events: write   # required for the SARIF upload
 
 steps:
-  - uses: prasadnadkarni/mobilegate@v0.1.0
+  - uses: prasadnadkarni/mobilegate@v0.4.0
     with:
       apk-path: app/build/outputs/apk/release/app-release-unsigned.apk
       sarif-file: mobilegate.sarif

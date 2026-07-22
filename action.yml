@@ -35,7 +35,7 @@ inputs:
     default: ""
   version:
     description: >-
-      MobileGate release version to fetch, e.g. "v0.1.0". Default
+      MobileGate release version to fetch, e.g. "v0.4.0". Default
       "latest" resolves to the newest GitHub release at
       github.com/prasadnadkarni/mobilegate/releases. Pin an exact
       version for a reproducible pipeline.
