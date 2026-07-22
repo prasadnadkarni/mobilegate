@@ -67,6 +67,36 @@ jobs:
 
           echo "All action pins in README.md/CONTRIBUTING.md match $tag"
 
+      # CITATION.cff's version/date-released are hand-written prose too,
+      # same failure mode as the README/CONTRIBUTING pins above: nothing
+      # else in this pipeline notices if they drift from the tag actually
+      # being released. Catch it here instead of letting a stale citation
+      # ship silently.
+      - name: Verify CITATION.cff version and date-released match this tag
+        run: |
+          tag="${{ github.ref_name }}"
+          today="$(date -u +%Y-%m-%d)"
+
+          cff_version=$(grep -E '^version:' CITATION.cff | head -1 | sed -E 's/^version:[[:space:]]*//')
+          cff_date=$(grep -E '^date-released:' CITATION.cff | head -1 | sed -E 's/^date-released:[[:space:]]*//' | tr -d '"')
+
+          if [ -z "$cff_version" ] || [ -z "$cff_date" ]; then
+            echo "::error::couldn't find version: and/or date-released: in CITATION.cff — the check pattern itself may be broken, not just the pin. Fix the check before trusting it."
+            exit 1
+          fi
+
+          if [ "$cff_version" != "$tag" ]; then
+            echo "::error::CITATION.cff version ($cff_version) does not match tag ($tag) — bump it before tagging a release"
+            exit 1
+          fi
+
+          if [ "$cff_date" != "$today" ]; then
+            echo "::error::CITATION.cff date-released ($cff_date) does not match today's date ($today, UTC) — bump it before tagging a release"
+            exit 1
+          fi
+
+          echo "CITATION.cff version and date-released match $tag ($today)"
+
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod

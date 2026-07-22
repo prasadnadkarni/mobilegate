@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it using the metadata from this file.
+title: MobileGate
+abstract: >-
+  MobileGate is an Android APK release gate for CI/CD. It runs a fixed
+  set of deterministic, high-precision rules against an APK and emits a
+  binary PASS or BLOCKED decision, rather than a general-purpose
+  findings report.
+type: software
+authors:
+  - family-names: Nadkarni
+    given-names: Prasad
+repository-code: https://github.com/prasadnadkarni/mobilegate
+license: Apache-2.0
+version: v0.4.3
+date-released: "2026-07-22"
+keywords:
+  - android
+  - mobile-security
+  - appsec
+  - ci-cd
+  - static-analysis
+  - release-gate

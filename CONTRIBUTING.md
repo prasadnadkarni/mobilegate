@@ -124,6 +124,12 @@ same commit you're about to tag (not after); if you forget, the release
 fails immediately with the exact file and line to fix, rather than
 publishing successfully with a stale README.
 
+`CITATION.cff`'s `version` and `date-released` fields are the same
+kind of hand-written prose, and a separate "Verify CITATION.cff
+version and date-released" step checks them the same way: `version`
+must equal the tag being pushed, and `date-released` must equal
+today's date (UTC). Bump both in the same commit as the tag.
+
 ## Scope discipline
 
 If a change isn't part of what you're actually fixing, don't make it —
