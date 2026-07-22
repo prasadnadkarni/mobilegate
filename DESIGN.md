@@ -38,6 +38,12 @@ one."* Concretely, this means MobileGate cannot and does not detect:
   `<path-permission>`) but cannot verify class inheritance without
   decompiling. See MG-004's section below for a case where this came up
   in practice.
+- WebView misconfiguration: `setJavaScriptEnabled(true)`,
+  `addJavascriptInterface(...)`, `setAllowFileAccess(true)` are call
+  sites with argument values, the same invisible-without-a-method-body
+  shape as the two bullets above. Probably the highest-value rule this
+  boundary blocks — see "Rules considered and not built" below (MG-006)
+  for why.
 
 **No `lib/*.so` (native/NDK) parsing.** Developers do embed secrets in
 native code on the mistaken belief it's harder to extract — it isn't,
@@ -70,6 +76,83 @@ recall tradeoff described in the README's "Why this isn't MobSF": every
 one of these boundaries exists because the alternative was a
 false-positive-prone guess, and a blocking rule that fires on a clean
 app is a worse failure than one that misses a real issue.
+
+## Rules considered and not built (MG-005–MG-009)
+
+The ID gap between MG-004 and MG-010 isn't an oversight — the original
+spec (`mobile-security-release-gate-build-prompt-v2.1.md`) names five
+rules, MG-005 through MG-009, that were considered and deferred, each
+for its own specific, structural reason. This section exists so the gap
+reads as a deliberate record, not a mystery — and it is a record, not a
+roadmap: none of these has a build-order step, a target version, or an
+implicit promise it's "coming soon." Revisiting any of them needs the
+same thing revisiting a "Scope limits" boundary above does — a
+deliberate decision with a reason, not a default assumption that more
+rules are always better.
+
+**MG-005 — certificate pinning.** Only the
+`network_security_config.xml` `<pin-set>` block is statically
+reachable — MobileGate already parses that file format
+(`pkg/parser/nsc`) for MG-002, so detecting a declared pin-set would be
+nearly free to add. Code-level pinning (OkHttp's `CertificatePinner`,
+TrustKit) is constructed inside a method body, the same
+invisible-without-bytecode shape as MG-002's TrustManager signal (see
+"Scope limits" above). The reason this isn't just "ship the easy half"
+is that the easy half is actively misleading on its own: a rule that
+only checks `<pin-set>` and reports "no pinning found" would tell a
+developer who correctly implemented `CertificatePinner` in code that
+they have no pinning at all — worse than not reporting anything.
+Warning-tier at best if ever built, and not before code-level detection
+exists too.
+
+**MG-006 — WebView misconfiguration.** `setJavaScriptEnabled(true)`,
+`addJavascriptInterface(...)`, and `setAllowFileAccess(true)` are call
+sites with argument values — invisible to a string-pool-only DEX
+parser for the same reason as every other bytecode-gated signal (see
+"Scope limits" above, which now names this one explicitly). Worth
+calling out on its own: this is probably the highest-value rule on this
+whole list if bytecode analysis is ever added. A JS bridge
+(`addJavascriptInterface`) exposed to a WebView that also has JavaScript
+and untrusted content loading enabled is a real, well-documented RCE
+path on Android, not a hardening nice-to-have — the gap here has more
+teeth than the other four.
+
+**MG-007 — excessive permissions.** Reachability was never the
+problem — every `<uses-permission>` is already visible in the manifest
+MobileGate parses for every other rule. The blocker is judgment:
+"excessive" only means something relative to an app-category baseline
+(a flashlight app requesting `CAMERA` is expected; requesting
+`READ_SMS` is not), and MobileGate has no source for that baseline and
+no reliable way to infer an app's category from the APK alone. That's
+exactly the subjective, context-dependent call the blocking tier exists
+to avoid — see "Why this isn't MobSF" in the README. An informational
+permission inventory (list them, no verdict) is the most this could
+ever be.
+
+**MG-008 — root/jailbreak detection.** Whether an app *has*
+root-detection code (checking for `su`, `Superuser.apk`, known build
+tags) is partly visible via string-pool signatures. Whether that
+detection is *weak* — trivially bypassable — is a bytecode judgment
+this tool can't make. But reachability isn't even the real blocker
+here: root detection is a runtime defense protecting an already-running
+app on an already-compromised device, not a property of the shippable
+release artifact itself. It's the wrong threat model for a release
+gate, not just an unbuilt rule.
+
+**MG-009 — third-party SDK inventory.** Detecting *which* SDKs an app
+bundles is reachable: attributed DEX class names (already extracted for
+MG-001's usage-based filtering — see `pkg/parser/dex`) reveal package
+namespaces like `com.google.firebase` or `com.facebook.sdk`. Detecting
+*which version* usually isn't — Android's build process doesn't
+reliably preserve a library's version string anywhere the
+manifest/DEX/resources readers can find it. An inventory without
+version numbers ("bundles Firebase, bundles the Facebook SDK") could be
+built honestly. A CVE-mapped vulnerability claim ("Firebase 9.2.1 has
+CVE-2021-XXXXX") needs a version this tool usually can't verify, and a
+wrong CVE claim is worse than no claim at all — the same
+false-positive-is-worse-than-a-miss principle the rest of this project
+is built around, applied to a rule that was never built rather than one
+that was built and then constrained.
 
 ## Policy heuristics: first-party domains and packages
 
