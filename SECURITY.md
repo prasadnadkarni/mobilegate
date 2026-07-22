@@ -2,9 +2,9 @@
 
 ## Supported Versions
 
-| Version | Supported |
-|---------|-----------|
-| Latest  | :white_check_mark: |
+Only the most recent release receives security fixes. Older tags are not
+patched — upgrade to the latest release.
+
 
 ## Reporting a Vulnerability
 
@@ -23,8 +23,9 @@ Please include the following information:
 
 ### Response Timeline
 
-- I will acknowledge your report within **48 hours**.
-- I will aim to resolve confirmed vulnerabilities within **7 days**.
+- I will acknowledge your report within 48 hours.
+- I will aim to provide a fix or a documented mitigation within 30 days,
+  and will keep you updated on progress in the meantime.
 
 ## Scope
 
@@ -51,3 +52,11 @@ following are in scope:
 - Vulnerabilities in third-party dependencies already tracked upstream
 - Social engineering
 - Network-level DoS against GitHub or other infrastructure
+
+## Testing
+
+MobileGate is designed to be run against untrusted APKs — testing it
+against crafted or malicious input is expected and encouraged. Please
+test against your own artifacts locally rather than against any
+third-party app you don't own.
+
