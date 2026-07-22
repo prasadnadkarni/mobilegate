@@ -309,7 +309,7 @@ if you'd rather the scan result alone govern the action's outcome.
 
 `-sarif <path>` (CLI) / `sarif-file` (action input) writes a SARIF
 2.1.0 file and, via the action, uploads it with
-`github/codeql-action/upload-sarif@v3` so findings show up in the repo's
+`github/codeql-action/upload-sarif@v4` so findings show up in the repo's
 **Security → Code scanning** tab alongside CodeQL and any other SARIF
 producer:
 
