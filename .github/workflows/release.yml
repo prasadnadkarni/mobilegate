@@ -72,7 +72,15 @@ jobs:
       # else in this pipeline notices if they drift from the tag actually
       # being released. Catch it here instead of letting a stale citation
       # ship silently.
-      - name: Verify CITATION.cff version and date-released match this tag
+      #
+      # date-released is checked as "not in the future" rather than
+      # "equals today" — a release prepared one day and tagged the next
+      # (or a tag pushed just after UTC midnight relative to whoever
+      # edited the file) shouldn't fail on that alone. What actually
+      # matters is that nobody pre-dates a release that hasn't happened
+      # yet; a slightly-stale-but-past date is a cosmetic nit, not a
+      # broken citation.
+      - name: Verify CITATION.cff version matches this tag and date-released isn't in the future
         run: |
           tag="${{ github.ref_name }}"
           today="$(date -u +%Y-%m-%d)"
@@ -90,12 +98,19 @@ jobs:
             exit 1
           fi
 
-          if [ "$cff_date" != "$today" ]; then
-            echo "::error::CITATION.cff date-released ($cff_date) does not match today's date ($today, UTC) — bump it before tagging a release"
+          cff_epoch=$(date -u -d "$cff_date" +%s 2>/dev/null)
+          if [ -z "$cff_epoch" ]; then
+            echo "::error::CITATION.cff date-released ($cff_date) isn't a valid ISO 8601 date (YYYY-MM-DD) — fix the format before tagging a release"
+            exit 1
+          fi
+          today_epoch=$(date -u -d "$today" +%s)
+
+          if [ "$cff_epoch" -gt "$today_epoch" ]; then
+            echo "::error::CITATION.cff date-released ($cff_date) is in the future (today is $today, UTC) — releases can't be dated ahead of when they're tagged"
             exit 1
           fi
 
-          echo "CITATION.cff version and date-released match $tag ($today)"
+          echo "CITATION.cff version matches $tag, date-released ($cff_date) is not in the future"
 
       - uses: actions/setup-go@v7
         with:
