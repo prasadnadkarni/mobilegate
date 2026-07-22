@@ -126,9 +126,12 @@ publishing successfully with a stale README.
 
 `CITATION.cff`'s `version` and `date-released` fields are the same
 kind of hand-written prose, and a separate "Verify CITATION.cff
-version and date-released" step checks them the same way: `version`
-must equal the tag being pushed, and `date-released` must equal
-today's date (UTC). Bump both in the same commit as the tag.
+version matches this tag and date-released isn't in the future" step
+checks them: `version` must equal the tag being pushed, and
+`date-released` must not be later than today (UTC) — it doesn't have
+to be *exactly* today, so preparing the release a day before you
+actually tag it doesn't fail the check. Bump both in the same commit
+as the tag.
 
 ## Scope discipline
 
