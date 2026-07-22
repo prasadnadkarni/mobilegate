@@ -54,6 +54,72 @@ checksum:
 # signature would). Revisit if/when this project has a real release
 # key management story, not as a first-release afterthought.
 
+# Homebrew tap — `brew install prasadnadkarni/tap/mobilegate`. Uses the
+# `brews` block, not the newer `homebrew_casks` goreleaser now suggests
+# for everything: casks install via `brew install --cask ...`, a
+# different command than the one this project targets, so switching
+# would silently change the documented install command. `brews` is
+# deprecated (goreleaser check flags it) but still fully functional as
+# of goreleaser 2.17 — verified, not assumed, before choosing it over
+# the replacement. Revisit if it's ever actually removed, not just
+# discouraged.
+#
+# Publishes to a SEPARATE repo (prasadnadkarni/homebrew-tap), not this
+# one, so it needs its own token with write access there — GITHUB_TOKEN
+# (scoped to this repo by default) can't push to a different repo. See
+# .github/workflows/release.yml's HOMEBREW_TAP_GITHUB_TOKEN env var and
+# that workflow's comment for exactly what secret to create and why.
+brews:
+  - name: mobilegate
+    repository:
+      owner: prasadnadkarni
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/prasadnadkarni/mobilegate"
+    description: "Android APK release gate for CI/CD — PASS/BLOCKED, not a findings report."
+    license: "Apache-2.0"
+    test: |
+      system "#{bin}/mobilegate", "-version"
+
+# Multi-arch (amd64/arm64) image published to ghcr.io — for CI systems
+# that aren't GitHub Actions (GitLab CI, Jenkins, ...), which can't use
+# action.yml's composite-action path and need `docker run` instead.
+# dockers_v2, not the deprecated dockers/docker_manifests pair: unlike
+# brews above, this migration doesn't change any user-facing command
+# (still `docker run ghcr.io/...`), so there's no reason to stay on the
+# deprecated path here — confirmed dockers_v2 validates cleanly (zero
+# deprecation warnings) on goreleaser 2.17 before committing to it, since
+# goreleaser's own docs flag it as a "provisional" name.
+#
+# Builds one buildx image per platform, joined into a multi-arch
+# manifest automatically (no separate docker_manifests block needed) —
+# see .github/workflows/release.yml for the QEMU/buildx setup this needs
+# on the (amd64-only) GitHub-hosted runner, and the ghcr.io login step,
+# both required before this block can push anything. `ids` selects which
+# builds: entry's binary goes into the image — required once there's
+# more than one addressable build, but harmless/explicit even with only
+# one.
+dockers_v2:
+  - id: mobilegate
+    ids:
+      - mobilegate
+    dockerfile: Dockerfile
+    images:
+      - ghcr.io/prasadnadkarni/mobilegate
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      "org.opencontainers.image.title": "{{ .ProjectName }}"
+      "org.opencontainers.image.version": "{{ .Version }}"
+      "org.opencontainers.image.source": "{{ .GitURL }}"
+      "org.opencontainers.image.licenses": "Apache-2.0"
+      "org.opencontainers.image.description": "Android APK release gate for CI/CD — PASS/BLOCKED, not a findings report."
+
 release:
   github:
     owner: prasadnadkarni

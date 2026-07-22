@@ -64,7 +64,32 @@ content-inference blocking) and why each boundary is deliberate.
 
 ## Quickstart
 
-**Build:**
+**Install** — four paths, pick based on what you're doing:
+
+| Method | Command | Who it's for |
+|---|---|---|
+| Homebrew | `brew install prasadnadkarni/tap/mobilegate` | macOS, local/interactive use |
+| Docker | `docker run --rm -v "$(pwd)":/work ghcr.io/prasadnadkarni/mobilegate:latest app.apk` | CI that isn't GitHub Actions — GitLab CI, Jenkins, anything where the composite action doesn't apply |
+| Release binary | download + checksum-verify from [Releases](https://github.com/prasadnadkarni/mobilegate/releases) | CI pipelines — pinned, checksum-verified (this is what the GitHub Action itself fetches) |
+| `go install` | `go install github.com/prasadnadkarni/mobilegate/cmd/mobilegate@latest` | Go developers trying it locally — unversioned, see below |
+
+The Docker image is `scratch`-based (no shell, no libc — matches the
+static-binary design) with `WORKDIR /work`, so mount the directory
+containing the APK (and `.mobilegate.yml`/baseline file, if any) at
+`/work` and pass paths relative to it, as in the command above. Built
+`linux/amd64` + `linux/arm64` — the platform is selected automatically
+by whatever's pulling the image.
+
+`go install` requires `$(go env GOPATH)/bin` on `PATH`, and the binary
+it produces has no version injected — `mobilegate -version` will show
+`0.0.0-dev` and say so explicitly, since `go install` doesn't run
+goreleaser's `-ldflags` step. That's fine for trying it out, but a
+`scanner_version` that doesn't correlate to anything is a real gap when
+correlating a bug report's JSON/SARIF output back to a specific build —
+for anything beyond a quick local try, prefer one of the other three
+paths above, all of which carry a real version.
+
+**Build from source** (for contributors — see `CONTRIBUTING.md`):
 
 ```sh
 git clone <this-repo>
@@ -74,18 +99,6 @@ go build -o mobilegate ./cmd/mobilegate
 
 Requires Go 1.26+. No other runtime dependency — the built binary is
 static and self-contained.
-
-`go install github.com/prasadnadkarni/mobilegate/cmd/mobilegate@latest`
-also works (requires `$(go env GOPATH)/bin` on `PATH`), but the binary
-it produces has no version injected — `mobilegate -version` will show
-`0.0.0-dev` and say so explicitly, since `go install` doesn't run
-goreleaser's `-ldflags` step. That's fine for trying it out, but a
-`scanner_version` that doesn't correlate to anything is a real gap when
-correlating a bug report's JSON/SARIF output back to a specific build —
-for anything beyond a quick local try, prefer a
-[release binary](https://github.com/prasadnadkarni/mobilegate/releases)
-or the [GitHub Action](#github-action), both of which carry a real
-version.
 
 **Scan an APK:**
 
