@@ -28,3 +28,12 @@ produce real PR-comment and Code Scanning UI to screenshot. Same
 staleness risk applies — if the PR comment format or the Code Scanning
 alert layout changes, these need to be re-captured by hand, not
 regenerated.
+
+## `blocked-merge.png`
+
+Same provenance again: captured from a pull request on
+`mobilegate-action-test`, this one against a branch ruleset that marks
+the MobileGate gate as a required status check — so the screenshot
+shows GitHub's own merge button disabled, not a mockup of what that
+would look like. If the required-check UI or the ruleset setup changes,
+re-capture by hand.

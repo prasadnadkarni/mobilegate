@@ -236,6 +236,10 @@ jobs:
           # baseline-path: .mobilegate-baseline.yml  # optional — omit to let policy.mode in .mobilegate.yml decide
 ```
 
+![MobileGate blocking a merge](docs/blocked-merge.png)
+*When the gate is a required status check, a BLOCKED scan prevents
+the PR from being merged.*
+
 ![MobileGate PR comment](docs/pr-comment.png)
 *The PR comment MobileGate posts on a BLOCKED result.*
 
