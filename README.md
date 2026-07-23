@@ -14,6 +14,8 @@ Single static Go binary, no runtime dependencies, no JVM. Pure static
 analysis: no device, no emulator, no network access required to run a
 scan.
 
+![MobileGate demo](docs/demo.gif)
+
 ```
 $ mobilegate app-release.apk
 RELEASE STATUS: BLOCKED
