@@ -14,6 +14,12 @@ repository-code: https://github.com/prasadnadkarni/mobilegate
 license: Apache-2.0
 version: v0.4.4
 date-released: "2026-07-23"
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.21501144
+    description: >-
+      Concept DOI — always resolves to the archived record for the
+      latest release, not this specific version.
 keywords:
   - android
   - mobile-security
