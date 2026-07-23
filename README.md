@@ -236,6 +236,9 @@ jobs:
           # baseline-path: .mobilegate-baseline.yml  # optional — omit to let policy.mode in .mobilegate.yml decide
 ```
 
+![MobileGate PR comment](docs/pr-comment.png)
+*The PR comment MobileGate posts on a BLOCKED result.*
+
 If the APK is built in a **different job** (a separate build job feeding
 a separate gate job), it has to cross the job boundary explicitly —
 each job is a clean filesystem:
@@ -328,6 +331,10 @@ steps:
       apk-path: app/build/outputs/apk/release/app-release-unsigned.apk
       sarif-file: mobilegate.sarif
 ```
+
+![MobileGate Code Scanning alert](docs/code-scanning-alert.png)
+*A MobileGate finding as a GitHub Code Scanning alert, with rule ID,
+severity, and remediation.*
 
 **Read this before relying on where alerts appear to point.** SARIF
 assumes a finding lives in a source file GitHub can check out and diff.

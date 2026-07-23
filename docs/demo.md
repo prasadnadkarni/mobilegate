@@ -1,4 +1,4 @@
-# How `demo.gif` was made
+# How the README's demo assets were made
 
 `demo.gif`, embedded in the README just above the static terminal
 output, is a screen recording of the three-command sequence: a strict
@@ -18,3 +18,13 @@ a checked-in script, so it can silently drift from the CLI's actual
 output over time (flag names, formatting, etc.). If the CLI's output
 changes in a way that makes the demo misleading, re-record it — there
 is no `make demo` to just re-run.
+
+## `pr-comment.png` and `code-scanning-alert.png`
+
+Same story as `demo.gif`, not generated from a script: these are
+hand-captured screenshots taken against `mobilegate-action-test`, a
+throwaway repo with the GitHub Action wired up, used specifically to
+produce real PR-comment and Code Scanning UI to screenshot. Same
+staleness risk applies — if the PR comment format or the Code Scanning
+alert layout changes, these need to be re-captured by hand, not
+regenerated.
