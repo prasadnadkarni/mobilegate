@@ -387,6 +387,19 @@ gitleaks' and trufflehog's public rule sets, cross-checked against each
 provider's own published token-format documentation — see
 `rules/MG-001-hardcoded-secret.yaml`'s header for full provenance.
 
+## Authors
+
+**Prasad Nadkarni** — [GitHub](https://github.com/prasadnadkarni) · [LinkedIn](https://www.linkedin.com/in/prasadnadkarni/)
+
+Application Security Consultant specializing in mobile, web, and API
+penetration testing and secure code review. This project is informed
+by practical experience assessing applications against OWASP ASVS,
+OWASP MASVS, OWASP API Security, and enterprise security requirements.
+
+`CITATION.cff` provides formal citation metadata; GitHub's "Cite this
+repository" button on the repo homepage generates a citation in APA or
+BibTeX format from it.
+
 ## Contributing
 
 See `CONTRIBUTING.md`.
