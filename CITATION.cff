@@ -12,8 +12,8 @@ authors:
     given-names: Prasad
 repository-code: https://github.com/prasadnadkarni/mobilegate
 license: Apache-2.0
-version: v0.4.3
-date-released: "2026-07-22"
+version: v0.4.4
+date-released: "2026-07-23"
 keywords:
   - android
   - mobile-security
