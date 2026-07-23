@@ -133,6 +133,17 @@ to be *exactly* today, so preparing the release a day before you
 actually tag it doesn't fail the check. Bump both in the same commit
 as the tag.
 
+`CITATION.cff`'s `identifiers` entry and the DOI badge in `README.md`
+point at Zenodo's **concept DOI** (`10.5281/zenodo.21501144`), not the
+version DOI Zenodo mints for each individual release
+(`10.5281/zenodo.21501145` for `v0.4.4`). This is deliberate, not an
+oversight to "fix" on the next release: the concept DOI always
+resolves to whichever version is latest, so it never goes stale and
+never needs bumping per tag — unlike the action pins and CITATION.cff
+version/date-released above. Do not swap it for a version DOI on a
+future release; that would reintroduce exactly the staleness problem
+this section exists to prevent.
+
 ## Scope discipline
 
 If a change isn't part of what you're actually fixing, don't make it —
